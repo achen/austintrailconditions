@@ -86,17 +86,6 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
 
       // Record the verification so we don't apply it again
       await sql`
-        CREATE TABLE IF NOT EXISTS trail_verifications (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          post_id TEXT NOT NULL,
-          trail_id UUID NOT NULL,
-          classification TEXT NOT NULL,
-          confidence_score NUMERIC NOT NULL,
-          new_status TEXT NOT NULL,
-          created_at TIMESTAMPTZ DEFAULT now()
-        )
-      `;
-      await sql`
         INSERT INTO trail_verifications (post_id, trail_id, classification, confidence_score, new_status)
         VALUES (${postId}, ${trailId}, ${classification}, ${confidence}, ${newStatus})
       `;
