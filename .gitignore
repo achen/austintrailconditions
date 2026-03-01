@@ -17,6 +17,7 @@ scraper/.env
 scraper/scrape.log
 scraper/node_modules/
 scraper/.chrome-profile/
+scraper/.seen-posts.json
 
 # misc
 .DS_Store

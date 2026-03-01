@@ -43,8 +43,16 @@ if (fs.existsSync(envPath)) {
 const API_URL = (process.env.API_URL || 'https://austintrailconditions.com').replace(/\/$/, '');
 const API_SECRET = process.env.API_SECRET || '';
 const FB_GROUP = 'https://www.facebook.com/groups/325119181430845';
-const SCROLL_COUNT = parseInt(process.env.SCROLL_COUNT || '8', 10);
+const MAX_SCROLLS = parseInt(process.env.MAX_SCROLLS || '50', 10); // safety cap
 const HEADLESS = process.env.HEADLESS !== 'false'; // default true
+
+// Email config (Resend)
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const ALERT_EMAIL = process.env.ALERT_EMAIL || '';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'info@austintrailconditions.com';
+
+// File to persist known post IDs between runs
+const SEEN_FILE = path.join(__dirname, '.seen-posts.json');
 
 // Source Chrome profile (your real logged-in session)
 const SOURCE_PROFILE = process.env.CHROME_PROFILE || path.join(os.homedir(), '.config', 'google-chrome');
@@ -129,6 +137,50 @@ function log(msg) {
 function randomDelay(minMs, maxMs) {
   const ms = minMs + Math.random() * (maxMs - minMs);
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ── Seen posts tracking ──────────────────────────────────────────────
+
+function loadSeenPosts() {
+  try {
+    if (fs.existsSync(SEEN_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SEEN_FILE, 'utf-8'));
+      return new Set(data.postIds || []);
+    }
+  } catch (e) {
+    log('Could not load seen posts file, starting fresh.');
+  }
+  return new Set();
+}
+
+function saveSeenPosts(postIds) {
+  // Keep last 500 IDs to avoid unbounded growth
+  const ids = Array.from(postIds).slice(-500);
+  fs.writeFileSync(SEEN_FILE, JSON.stringify({ postIds: ids, updatedAt: new Date().toISOString() }));
+}
+
+// ── Email notification ───────────────────────────────────────────────
+
+async function sendEmail(subject, html) {
+  if (!RESEND_API_KEY || !ALERT_EMAIL) return;
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: FROM_EMAIL,
+        to: ALERT_EMAIL,
+        subject: `[Trail Scraper] ${subject}`,
+        html,
+      }),
+    });
+    if (!res.ok) log(`Email send failed: ${res.status}`);
+  } catch (e) {
+    log(`Email error: ${e.message}`);
+  }
 }
 
 // ── Post + comment extraction (runs in browser context) ──────────────
@@ -318,15 +370,53 @@ async function scrape() {
       log('Sort switch failed (non-fatal): ' + e.message);
     }
 
-    log('Starting scroll...');
+    log('Scrolling until we find a known post...');
 
-    for (let i = 0; i < SCROLL_COUNT; i++) {
+    const seenPosts = loadSeenPosts();
+    log(`${seenPosts.size} previously seen post IDs loaded.`);
+    let foundKnown = false;
+    let scrollCount = 0;
+
+    // Function to extract just post IDs visible on page (lightweight check)
+    const getVisiblePostIds = () => page.evaluate(() => {
+      const ids = [];
+      const articles = document.querySelectorAll('div[role="article"]');
+      for (const article of articles) {
+        if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+        const links = article.querySelectorAll('a[href]');
+        for (const link of links) {
+          const href = link.getAttribute('href') || '';
+          const match = href.match(/\/permalink\/(\d+)|\/posts\/(\d+)|story_fbid=(\d+)/);
+          if (match) {
+            ids.push(match[1] || match[2] || match[3]);
+            break;
+          }
+        }
+      }
+      return ids;
+    });
+
+    while (scrollCount < MAX_SCROLLS) {
       const scrollAmount = 600 + Math.floor(Math.random() * 800);
       await page.evaluate((amount) => window.scrollBy(0, amount), scrollAmount);
+      scrollCount++;
 
       const delay = 2000 + Math.random() * 3000;
-      log(`Scroll ${i + 1}/${SCROLL_COUNT}, waiting ${Math.round(delay)}ms...`);
+      log(`Scroll ${scrollCount}/${MAX_SCROLLS}, waiting ${Math.round(delay)}ms...`);
       await randomDelay(delay, delay + 500);
+
+      // Check if any visible posts are ones we've seen before
+      const visibleIds = await getVisiblePostIds();
+      const knownCount = visibleIds.filter(id => seenPosts.has(id)).length;
+      if (knownCount >= 2 && seenPosts.size > 0) {
+        log(`Found ${knownCount} known posts — caught up, stopping scroll.`);
+        foundKnown = true;
+        break;
+      }
+    }
+
+    if (!foundKnown && seenPosts.size > 0) {
+      log(`Hit max scrolls (${MAX_SCROLLS}) without finding a known post.`);
     }
 
     await randomDelay(2000, 3000);
@@ -366,9 +456,16 @@ async function scrape() {
 
     if (posts.length === 0) {
       log('No posts found. Try running with HEADLESS=false to see what the page looks like.');
+      await sendEmail('No posts found', '<p>Scraper ran but found 0 posts. Cookies may be stale or page structure changed.</p>');
       await browser.close();
       process.exit(0);
     }
+
+    // Save all post IDs we've seen for next run
+    const allPostIds = posts.filter(p => !p.isComment).map(p => p.postId);
+    for (const id of allPostIds) seenPosts.add(id);
+    saveSeenPosts(seenPosts);
+    log(`Saved ${seenPosts.size} seen post IDs.`);
 
     log(`Sending ${posts.length} posts to ${API_URL}/api/scrape/ingest`);
     const response = await fetch(`${API_URL}/api/scrape/ingest`, {
@@ -383,15 +480,30 @@ async function scrape() {
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
       log(`API error ${response.status}: ${errText.slice(0, 500)}`);
+      await sendEmail(`API error ${response.status}`, `<p>Scraper extracted ${posts.length} items but API returned ${response.status}:</p><pre>${errText.slice(0, 500)}</pre>`);
       process.exit(1);
     }
 
     const result = await response.json();
     log(`Done! stored=${result.stored}, classified=${result.classified}, verified=${result.verified || 0}`);
 
+    await sendEmail(
+      `${postCount} posts, ${commentCount} comments scraped`,
+      `<h3>Scraper Run Complete</h3>
+       <ul>
+         <li>Posts: ${postCount}</li>
+         <li>Comments: ${commentCount}</li>
+         <li>Scrolls: ${scrollCount}</li>
+         <li>New stored: ${result.stored}</li>
+         <li>Classified: ${result.classified}</li>
+         <li>Verified: ${result.verified || 0}</li>
+       </ul>`
+    );
+
   } catch (err) {
     log(`ERROR: ${err.message}`);
     if (err.stack) log(err.stack);
+    await sendEmail('Scraper error', `<p>Scraper failed:</p><pre>${err.message}\n${err.stack || ''}</pre>`);
     process.exit(1);
   } finally {
     if (browser) await browser.close();
