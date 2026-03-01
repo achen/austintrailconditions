@@ -1,5 +1,6 @@
 import { sql } from '@/lib/db';
 import { recordActualOutcome } from '@/services/prediction-engine';
+import { storeDryingConditions } from '@/services/drying-model';
 
 const CONFIDENCE_THRESHOLD = 0.7;
 
@@ -97,11 +98,14 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
           LIMIT 1
         `;
         if (recentRainEvent.rows.length > 0) {
-          await recordActualOutcome(
-            trailId,
-            recentRainEvent.rows[0].id as string,
-            postTimestamp
-          );
+          const rainEventId = recentRainEvent.rows[0].id as string;
+          await recordActualOutcome(trailId, rainEventId, postTimestamp);
+          // Store weather features for ML training
+          try {
+            await storeDryingConditions(trailId, rainEventId, postTimestamp);
+          } catch (err) {
+            console.error('Failed to store drying conditions:', err);
+          }
         }
       }
 

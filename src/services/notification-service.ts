@@ -69,17 +69,28 @@ export async function notifyCronFailure(
 
 /**
  * Alert when rain is detected — informational, so you know the system is working.
+ * Includes current trail statuses.
  */
 export async function notifyRainDetected(
   eventsCreated: number,
-  totalPrecipitation: number
+  totalPrecipitation: number,
+  trailStatuses?: Array<{ name: string; status: string }>
 ): Promise<boolean> {
+  const trailTable = trailStatuses && trailStatuses.length > 0
+    ? `<h3>Current Trail Statuses</h3>
+       <table style="border-collapse:collapse;font-size:14px">
+         <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Trail</th><th style="padding:4px 8px;text-align:left">Status</th></tr>
+         ${trailStatuses.map(t => `<tr><td style="padding:4px 8px">${t.name}</td><td style="padding:4px 8px">${t.status}</td></tr>`).join('')}
+       </table>`
+    : '';
+
   return sendAlert(
     `Rain detected — ${eventsCreated} new event(s)`,
     `<h3>Rain Detected</h3>
      <p><strong>${eventsCreated}</strong> new rain event(s) created.</p>
      <p>Total precipitation: <strong>${totalPrecipitation.toFixed(2)}"</strong></p>
-     <p>Trail predictions will be updated on the next prediction cycle.</p>`
+     <p>Trail predictions will be updated on the next prediction cycle.</p>
+     ${trailTable}`
   );
 }
 

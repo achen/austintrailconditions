@@ -147,7 +147,17 @@ export async function GET(request: Request) {
 
     if (rainEvents.length > 0) {
       const totalPrecip = allObservations.reduce((sum, o) => sum + o.precipitationIn, 0);
-      await notifyRainDetected(rainEvents.length, totalPrecip);
+      // Include current trail statuses in the rain notification
+      const trailStatusResult = await sql`
+        SELECT name, condition_status FROM trails
+        WHERE is_archived = false
+        ORDER BY name ASC
+      `;
+      const trailStatuses = trailStatusResult.rows.map(r => ({
+        name: r.name as string,
+        status: r.condition_status as string,
+      }));
+      await notifyRainDetected(rainEvents.length, totalPrecip, trailStatuses);
     }
 
     return NextResponse.json({

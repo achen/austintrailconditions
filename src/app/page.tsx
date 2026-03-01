@@ -37,28 +37,30 @@ export default async function DashboardPage() {
           <ul className="divide-y divide-gray-100 bg-white rounded-lg shadow-sm border border-gray-100">
             {trails.map((trail) => {
               const isRideable = trail.condition_status === 'Verified Rideable' || trail.condition_status === 'Probably Rideable';
-              const statusColor = 'text-white/80';
               const rowBg = isRideable ? 'bg-green-600 text-white' : 'bg-red-600 text-white';
               const isDrying = trail.condition_status === 'Probably Not Rideable' || trail.condition_status === 'Probably Rideable';
+              const statusLabel = trail.condition_status === 'Closed' ? 'Closed' : trail.condition_status.replace('Verified ', '').replace('Probably ', 'Predicted ');
 
               return (
-                <li key={trail.id} className={`flex items-center gap-2 px-3 py-2 ${rowBg}`}>
-                  <span className="font-medium text-sm truncate flex-1">{trail.name}</span>
-                  {isDrying && trail.predicted_dry_time ? (
-                    <span className="text-xs text-white/70 w-28 text-right shrink-0">
-                      dry {new Date(trail.predicted_dry_time) > new Date()
-                        ? formatDistanceToNow(new Date(trail.predicted_dry_time), { addSuffix: true })
-                        : 'soon'}
+                <li key={trail.id} className={`px-3 py-2 ${rowBg}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-sm truncate">{trail.name}</span>
+                    <span className="text-xs font-medium text-white/80 shrink-0">{statusLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-0.5">
+                    {isDrying && trail.predicted_dry_time ? (
+                      <span className="text-xs text-white/70">
+                        dry {new Date(trail.predicted_dry_time) > new Date()
+                          ? formatDistanceToNow(new Date(trail.predicted_dry_time), { addSuffix: true })
+                          : 'soon'}
+                      </span>
+                    ) : (
+                      <span />
+                    )}
+                    <span className="text-xs text-white/70">
+                      {format(new Date(trail.updated_at), 'M/d h:mma')}
                     </span>
-                  ) : (
-                    <span className="w-28 shrink-0" />
-                  )}
-                  <span className={`text-xs font-medium w-32 text-right shrink-0 ${statusColor}`}>
-                    {trail.condition_status === 'Closed' ? 'Closed' : trail.condition_status.replace('Verified ', '').replace('Probably ', 'Predicted ')}
-                  </span>
-                  <span className={`text-xs w-24 text-right shrink-0 text-white/70`}>
-                    {format(new Date(trail.updated_at), 'M/d h:mma')}
-                  </span>
+                  </div>
                 </li>
               );
             })}
