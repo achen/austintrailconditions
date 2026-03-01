@@ -1,6 +1,7 @@
 import { formatDistanceToNow, format } from 'date-fns';
 
 import { getTrailsWithConditions, getPredictionAccuracy } from '@/services/dashboard-service';
+import FeedbackButton from './feedback-button';
 
 
 export default async function DashboardPage() {
@@ -63,6 +64,9 @@ export default async function DashboardPage() {
             })}
           </ul>
         )}
+        <div className="mt-4 text-center">
+          <FeedbackButton />
+        </div>
       </div>
     </main>
   );
