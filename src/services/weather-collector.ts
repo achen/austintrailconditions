@@ -48,10 +48,12 @@ export async function fetchObservations(
 
   const response = await fetch(url);
 
-  if (!response.ok) {
-    console.error(
-      `Weather API error for station ${stationId}: ${response.status} ${response.statusText}`
-    );
+  if (!response.ok || response.status === 204) {
+    if (response.status !== 204) {
+      console.error(
+        `Weather API error for station ${stationId}: ${response.status} ${response.statusText}`
+      );
+    }
     return [];
   }
 

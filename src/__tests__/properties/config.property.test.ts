@@ -7,9 +7,6 @@ import { validateConfig } from '@/services/config-validator';
 
 const REQUIRED_ENV_VARS = [
   'WEATHER_API_KEY',
-  'FACEBOOK_ACCESS_TOKEN',
-  'FACEBOOK_GROUP_ID',
-  'OPENAI_API_KEY',
   'POSTGRES_URL',
 ] as const;
 
@@ -20,9 +17,6 @@ const REQUIRED_ENV_VARS = [
 const incompleteEnvArb = fc
   .record({
     WEATHER_API_KEY: fc.string({ minLength: 1 }),
-    FACEBOOK_ACCESS_TOKEN: fc.string({ minLength: 1 }),
-    FACEBOOK_GROUP_ID: fc.string({ minLength: 1 }),
-    OPENAI_API_KEY: fc.string({ minLength: 1 }),
     POSTGRES_URL: fc.constant('postgresql://user:pass@host:5432/db'),
   })
   .chain((fullEnv) =>
