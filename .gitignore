@@ -12,6 +12,11 @@ out/
 .env.local
 .env.*.local
 
+# scraper
+scraper/.env
+scraper/scrape.log
+scraper/node_modules/
+
 # misc
 .DS_Store
 *.tsbuildinfo
