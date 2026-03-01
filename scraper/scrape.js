@@ -183,6 +183,21 @@ async function sendEmail(subject, html) {
   }
 }
 
+// ── Fetch trail statuses from API ────────────────────────────────────
+
+async function fetchTrailStatuses() {
+  try {
+    const res = await fetch(`${API_URL}/api/trails`);
+    if (!res.ok) return {};
+    const trails = await res.json();
+    const map = {};
+    for (const t of trails) map[t.name] = t.conditionStatus;
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 // ── Post + comment extraction (runs in browser context) ──────────────
 
 function extractPostsFromPage() {
@@ -467,6 +482,9 @@ async function scrape() {
     saveSeenPosts(seenPosts);
     log(`Saved ${seenPosts.size} seen post IDs.`);
 
+    // Snapshot trail statuses BEFORE ingest
+    const beforeStatuses = await fetchTrailStatuses();
+
     log(`Sending ${posts.length} posts to ${API_URL}/api/scrape/ingest`);
     const response = await fetch(`${API_URL}/api/scrape/ingest`, {
       method: 'POST',
@@ -487,17 +505,34 @@ async function scrape() {
     const result = await response.json();
     log(`Done! stored=${result.stored}, classified=${result.classified}, verified=${result.verified || 0}`);
 
-    await sendEmail(
-      `${postCount} posts, ${commentCount} comments scraped`,
+    // Snapshot trail statuses AFTER ingest
+    const afterStatuses = await fetchTrailStatuses();
+
+    // Build trail status table for email
+    const trailNames = Object.keys(afterStatuses).sort();
+    let changedCount = 0;
+    const trailRows = trailNames.map(name => {
+      const before = beforeStatuses[name] || 'Unknown';
+      const after = afterStatuses[name] || 'Unknown';
+      const changed = before !== after;
+      if (changed) changedCount++;
+      const style = changed ? 'background:#fff3cd;font-weight:bold' : '';
+      const label = changed ? `${after} ⬅ was ${before}` : after;
+      return `<tr style="${style}"><td style="padding:4px 8px">${name}</td><td style="padding:4px 8px">${label}</td></tr>`;
+    }).join('');
+
+    const subject = changedCount > 0
+      ? `${changedCount} trail status change${changedCount > 1 ? 's' : ''} — ${postCount} posts, ${commentCount} comments`
+      : `${postCount} posts, ${commentCount} comments — no status changes`;
+
+    await sendEmail(subject,
       `<h3>Scraper Run Complete</h3>
-       <ul>
-         <li>Posts: ${postCount}</li>
-         <li>Comments: ${commentCount}</li>
-         <li>Scrolls: ${scrollCount}</li>
-         <li>New stored: ${result.stored}</li>
-         <li>Classified: ${result.classified}</li>
-         <li>Verified: ${result.verified || 0}</li>
-       </ul>`
+       <p>Posts: ${postCount} · Comments: ${commentCount} · Scrolls: ${scrollCount} · New stored: ${result.stored} · Classified: ${result.classified}</p>
+       <h3>Trail Statuses${changedCount > 0 ? ` (${changedCount} changed)` : ''}</h3>
+       <table style="border-collapse:collapse;font-size:14px">
+         <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Trail</th><th style="padding:4px 8px;text-align:left">Status</th></tr>
+         ${trailRows}
+       </table>`
     );
 
   } catch (err) {
