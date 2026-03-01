@@ -74,7 +74,7 @@ export function extractTrailNames(text: string, knownTrails: string[]): string[]
     }
   }
 
-  return [...new Set(matched)];
+  return Array.from(new Set(matched));
 }
 
 /**

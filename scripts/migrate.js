@@ -1,30 +1,30 @@
 /**
- * Database migration runner for Vercel Postgres.
+ * Database migration runner for Neon Postgres.
  * Reads SQL migration files from src/db/migrations/ and executes them in order.
  * Tracks applied migrations in a _migrations table to avoid re-running.
  *
  * Usage: node scripts/migrate.js
- * Requires POSTGRES_URL environment variable.
+ * Requires DATABASE_URL (or POSTGRES_URL) environment variable.
  */
 
-const { createPool } = require("@vercel/postgres");
+const { neon } = require("@neondatabase/serverless");
 const fs = require("fs");
 const path = require("path");
 
 const MIGRATIONS_DIR = path.join(__dirname, "..", "src", "db", "migrations");
 
 async function run() {
-  const connectionString = process.env.POSTGRES_URL;
+  const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
   if (!connectionString) {
-    console.error("Error: POSTGRES_URL environment variable is not set.");
+    console.error("Error: DATABASE_URL environment variable is not set.");
     process.exit(1);
   }
 
-  const pool = createPool({ connectionString });
+  const sql = neon(connectionString);
 
   try {
     // Ensure the migrations tracking table exists
-    await pool.sql`
+    await sql`
       CREATE TABLE IF NOT EXISTS _migrations (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
@@ -33,9 +33,7 @@ async function run() {
     `;
 
     // Get already-applied migrations
-    const { rows: applied } = await pool.sql`
-      SELECT name FROM _migrations ORDER BY id
-    `;
+    const applied = await sql`SELECT name FROM _migrations ORDER BY id`;
     const appliedSet = new Set(applied.map((r) => r.name));
 
     // Read migration files sorted alphabetically
@@ -57,11 +55,12 @@ async function run() {
       }
 
       const filePath = path.join(MIGRATIONS_DIR, file);
-      const sql = fs.readFileSync(filePath, "utf-8");
+      const migrationSql = fs.readFileSync(filePath, "utf-8");
 
       console.log(`Applying migration: ${file}`);
-      await pool.query(sql);
-      await pool.sql`INSERT INTO _migrations (name) VALUES (${file})`;
+      // neon() tagged template can't run raw SQL strings, so use the query method
+      await sql(migrationSql);
+      await sql`INSERT INTO _migrations (name) VALUES (${file})`;
       console.log(`Applied: ${file}`);
       ranCount++;
     }
@@ -74,8 +73,6 @@ async function run() {
   } catch (err) {
     console.error("Migration failed:", err.message);
     process.exit(1);
-  } finally {
-    await pool.end();
   }
 }
 

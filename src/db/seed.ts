@@ -1,4 +1,4 @@
-import { getPool } from '../lib/db';
+import { sql } from '../lib/db';
 import { seedTrails } from './seed-trails';
 
 /**
@@ -7,11 +7,10 @@ import { seedTrails } from './seed-trails';
  * existing trails won't be overwritten.
  */
 export async function seedDatabase(): Promise<number> {
-  const pool = getPool();
   let inserted = 0;
 
   for (const trail of seedTrails) {
-    const result = await pool.sql`
+    const result = await sql`
       INSERT INTO trails (name, primary_station_id, drying_rate_in_per_day, max_drying_days, updates_enabled)
       VALUES (${trail.name}, ${trail.primaryStationId}, ${trail.dryingRateInPerDay}, ${trail.maxDryingDays}, ${trail.updatesEnabled})
       ON CONFLICT (name) DO NOTHING

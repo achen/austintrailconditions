@@ -1,27 +1,22 @@
-import { sql, createPool } from '@vercel/postgres';
+import { neon } from '@neondatabase/serverless';
 
 /**
- * Vercel Postgres database client utilities.
+ * Neon Postgres database client.
  *
- * - `sql` — Tagged template for simple queries: sql`SELECT * FROM trails`
- * - `getPool()` — Returns a connection pool for transactional or batch work
+ * `sql` — Tagged template for queries: sql`SELECT * FROM trails`
+ * Returns { rows, rowCount, ... } via fullResults mode.
  *
- * Both use the POSTGRES_URL environment variable automatically.
+ * Uses DATABASE_URL (or POSTGRES_URL as fallback) environment variable.
  */
 
-let pool: ReturnType<typeof createPool> | null = null;
-
-export function getPool() {
-  if (!pool) {
-    const connectionString = process.env.POSTGRES_URL;
-    if (!connectionString) {
-      throw new Error(
-        'Missing POSTGRES_URL environment variable. Database connection cannot be established.'
-      );
-    }
-    pool = createPool({ connectionString });
+function getConnectionString(): string {
+  const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+  if (!url) {
+    throw new Error(
+      'Missing DATABASE_URL environment variable. Database connection cannot be established.'
+    );
   }
-  return pool;
+  return url;
 }
 
-export { sql };
+export const sql = neon(getConnectionString(), { fullResults: true });
