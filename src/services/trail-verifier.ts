@@ -24,7 +24,9 @@ interface VerificationResult {
  */
 export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
   // Get recently classified posts (last 24h) that reference specific trails
-  // and haven't been applied yet
+  // and haven't been applied yet.
+  // ORDER BY timestamp ASC so we process oldest first — if someone says "dry"
+  // then later says "wet", the later post wins (overwrites the earlier one).
   const reportsResult = await sql`
     SELECT tr.post_id, tr.classification, tr.confidence_score,
            tr.trail_references, tr.timestamp
@@ -38,7 +40,7 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
         SELECT 1 FROM trail_verifications tv
         WHERE tv.post_id = tr.post_id
       )
-    ORDER BY tr.timestamp DESC
+    ORDER BY tr.timestamp ASC
   `;
 
   const results: VerificationResult[] = [];
@@ -70,12 +72,8 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
       const trailId = trail.id as string;
       const currentStatus = trail.condition_status as string;
 
-      // Don't downgrade a verified status with the same classification
+      // Skip if status is already the same
       if (currentStatus === newStatus) continue;
-
-      // Don't mark as "Verified Not Rideable" if already "Verified Rideable"
-      // unless the post is more recent (someone rode and found it wet)
-      // For now, always trust the most recent report
 
       // Update trail status
       await sql`
