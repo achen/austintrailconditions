@@ -53,8 +53,8 @@ export default async function DashboardPage() {
                   ) : (
                     <span className="w-28 shrink-0" />
                   )}
-                  <span className={`text-xs font-medium w-20 text-right shrink-0 ${statusColor}`}>
-                    {trail.condition_status === 'Closed' ? 'Closed' : trail.condition_status.replace('Verified ', '').replace('Probably ', '~')}
+                  <span className={`text-xs font-medium w-32 text-right shrink-0 ${statusColor}`}>
+                    {trail.condition_status === 'Closed' ? 'Closed' : trail.condition_status.replace('Verified ', '').replace('Probably ', 'Predicted ')}
                   </span>
                   <span className={`text-xs w-24 text-right shrink-0 text-white/70`}>
                     {format(new Date(trail.updated_at), 'M/d h:mma')}

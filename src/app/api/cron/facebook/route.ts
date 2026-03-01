@@ -1,58 +1,86 @@
 import { NextResponse } from 'next/server';
-import { validateConfig } from '@/services/config-validator';
-import { fetchPosts, storePosts } from '@/services/post-collector';
+import { fetchGroupPosts } from '@/services/facebook-scraper';
+import { storePosts } from '@/services/post-collector';
 import { classify } from '@/services/post-classifier';
 import { listActive } from '@/services/trail-service';
+import { applyVerifiedStatuses } from '@/services/trail-verifier';
 import { sql } from '@/lib/db';
+import { notifyCronFailure } from '@/services/notification-service';
 import { TrailReport } from '@/types';
 
 /**
  * GET /api/cron/facebook
  *
  * Vercel Cron endpoint for Facebook post collection and classification.
- * - Validates CRON_SECRET authorization
- * - Fetches recent posts from the configured Facebook group
- * - Stores new posts (deduplicates by post_id)
- * - Classifies any unclassified posts using OpenAI
- * - Logs errors and flags admin notification on Facebook API failures
- *
- * Requirements: 2.1, 2.3, 2.5, 7.1
+ * - Only runs during daytime (6am–8pm CT)
+ * - Only scrapes when trails are actively drying (not when all are dry or all are soaked)
+ * - Adds random jitter (0–10 min) to avoid predictable request patterns
+ * - Scrapes mbasic.facebook.com directly with cookie auth (no Apify)
  */
 export async function GET(request: Request) {
-  // 1. Cron authorization check
   const authHeader = request.headers.get('authorization');
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    // 2. Validate configuration
-    const config = validateConfig();
+    // 1. Check if any trails are actively drying — skip if all dry or no rain events
+    const dryingTrails = await sql`
+      SELECT COUNT(*) as count FROM trails t
+      JOIN rain_events re ON re.trail_id = t.id
+      WHERE t.is_archived = false
+        AND re.is_active = false
+        AND re.end_timestamp > now() - interval '7 days'
+        AND t.condition_status IN ('Probably Not Rideable', 'Probably Rideable')
+    `;
+    const dryingCount = parseInt(dryingTrails.rows[0]?.count as string) || 0;
 
-    // 3. Fetch posts from Facebook (Req 2.1)
-    let posts: TrailReport[];
-    try {
-      posts = await fetchPosts(config.facebook.groupId, config.facebook.accessToken);
-    } catch (err) {
-      // Log error and flag admin notification on Facebook API failure (Req 2.3)
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`Facebook API failure: ${message}`);
-      return NextResponse.json(
-        { error: 'Facebook API failure', details: message, adminNotification: true },
-        { status: 502 }
-      );
+    if (dryingCount === 0) {
+      return NextResponse.json({
+        skipped: true,
+        reason: 'No trails actively drying — Facebook scrape not needed',
+      });
     }
 
-    // 4. Store new posts (Req 2.2, 2.4 — deduplication via ON CONFLICT)
+    // 2. Check if automated Facebook scraping is enabled
+    // Disabled by default — use the browser extension instead to avoid account locks.
+    // Set FACEBOOK_SCRAPER_ENABLED=true in env to enable Apify-based scraping.
+    if (process.env.FACEBOOK_SCRAPER_ENABLED !== 'true') {
+      return NextResponse.json({
+        skipped: true,
+        reason: 'Automated Facebook scraping disabled. Use the browser extension to submit posts.',
+      });
+    }
+
+    // 3. Random jitter: wait 0–10 minutes to vary request timing
+    const jitterMs = Math.floor(Math.random() * 10 * 60 * 1000);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(jitterMs, 30_000)));
+    // Cap at 30s in practice (Vercel functions have a timeout)
+
+    // 3. Scrape Facebook group posts
+    const posts = await fetchGroupPosts(25);
+
+    if (posts.length === 0) {
+      return NextResponse.json({
+        success: true,
+        postsFetched: 0,
+        postsStored: 0,
+        postsClassified: 0,
+        note: 'No posts returned — cookies may be expired or group page empty',
+      });
+    }
+
+    // 4. Store new posts (deduplicates via ON CONFLICT)
     const stored = await storePosts(posts);
 
-    // 5. Query unclassified posts (classification IS NULL) (Req 7.1)
+    // 5. Classify unclassified posts
     const unclassifiedResult = await sql`
       SELECT post_id, author_name, post_text, timestamp,
              trail_references, classification, confidence_score, flagged_for_review
       FROM trail_reports
       WHERE classification IS NULL
       ORDER BY timestamp DESC
+      LIMIT 50
     `;
 
     const unclassifiedPosts: TrailReport[] = unclassifiedResult.rows.map(
@@ -68,36 +96,41 @@ export async function GET(request: Request) {
       })
     );
 
-    // 6. Get known trail names for classification (Req 7.2)
     const activeTrails = await listActive();
     const knownTrailNames = activeTrails.map((t) => t.name);
 
-    // 7. Classify each unclassified post (Req 7.1)
-    const classificationResults = [];
+    let classified = 0;
     const classificationErrors: string[] = [];
 
-    for (const post of unclassifiedPosts) {
-      try {
-        const result = await classify(post, knownTrailNames);
-        classificationResults.push(result);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`Classification failed for post ${post.postId}: ${message}`);
-        classificationErrors.push(`${post.postId}: ${message}`);
+    // Only classify if OpenAI key is available
+    if (process.env.OPENAI_API_KEY) {
+      for (const post of unclassifiedPosts) {
+        try {
+          await classify(post, knownTrailNames);
+          classified++;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          classificationErrors.push(`${post.postId}: ${msg}`);
+        }
       }
     }
 
-    // 8. Return summary response
+    // 6. Apply verified statuses based on classified posts
+    const verifications = await applyVerifiedStatuses();
+
     return NextResponse.json({
       success: true,
+      dryingTrails: dryingCount,
       postsFetched: posts.length,
       postsStored: stored,
-      postsClassified: classificationResults.length,
+      postsClassified: classified,
+      trailsVerified: verifications.length > 0 ? verifications : undefined,
       classificationErrors: classificationErrors.length > 0 ? classificationErrors : undefined,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Facebook cron failed: ${message}`);
+    await notifyCronFailure('facebook', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

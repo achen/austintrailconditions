@@ -82,3 +82,28 @@ export async function notifyRainDetected(
      <p>Trail predictions will be updated on the next prediction cycle.</p>`
   );
 }
+
+/**
+ * Alert when Facebook cookies have expired and need refreshing.
+ * Includes a link to the admin cookie update page.
+ */
+export async function notifyCookieExpired(): Promise<boolean> {
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : 'http://localhost:3002';
+
+  return sendAlert(
+    'Facebook cookies expired — action required',
+    `<h3>Facebook Cookies Expired</h3>
+     <p>The Facebook scraper received a login page instead of group posts. Your cookies need to be refreshed.</p>
+     <h4>How to fix:</h4>
+     <ol>
+       <li>Open Facebook in Chrome and make sure you're logged in</li>
+       <li>Open DevTools (F12) → Application → Cookies → facebook.com</li>
+       <li>Copy the cookie string (or use the Cookie-Editor extension to export)</li>
+       <li><a href="${siteUrl}/admin/cookies">Click here to paste your new cookies</a></li>
+     </ol>
+     <p style="color:#888;font-size:12px">Cookies typically expire every ~90 days.</p>`
+  );
+}
+

@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/cron/facebook",
-      "schedule": "*/30 * * * *"
+      "schedule": "0 12,14,16,18,20,22,0,2 * * *"
     },
     {
       "path": "/api/cron/predict",
