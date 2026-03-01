@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/predict",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/scrape",
+      "schedule": "*/30 * * * *"
     }
   ]
 }
