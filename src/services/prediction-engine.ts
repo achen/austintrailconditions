@@ -233,7 +233,6 @@ export async function updatePredictions(openaiClient?: OpenAI): Promise<Predicti
     FROM trails
     WHERE condition_status IN ('Probably Not Rideable', 'Probably Rideable')
       AND is_archived = false
-      AND updates_enabled = true
   `;
 
   for (const row of trailsResult.rows) {
@@ -384,7 +383,8 @@ export async function updatePredictions(openaiClient?: OpenAI): Promise<Predicti
     updatedPredictions.push(prediction);
 
     // Transition to "Probably Rideable" if predicted dry time has passed (Req 4.4)
-    if (predictedDryTime <= new Date()) {
+    // Only auto-update status for trails with updates enabled
+    if (predictedDryTime <= new Date() && trail.updatesEnabled) {
       await sql`
         UPDATE trails
         SET condition_status = 'Probably Rideable',

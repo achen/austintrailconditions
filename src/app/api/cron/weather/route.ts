@@ -8,6 +8,7 @@ import {
 } from '@/services/weather-collector';
 import { evaluate, checkForRainEnd } from '@/services/rain-detector';
 import { notifyStationsDown, notifyCronFailure, notifyRainDetected } from '@/services/notification-service';
+import { autoReplaceOfflineStations, crossValidatePrecipitation } from '@/services/station-health';
 import { sql } from '@/lib/db';
 import { WeatherObservation } from '@/types';
 
@@ -88,16 +89,58 @@ export async function GET(request: Request) {
       }
     }
 
-    // 6. Run rain detection on all new observations (Req 3.1)
-    const rainEvents = await evaluate(allObservations);
-
-    // 7. Check for rain end (60-min dry gap)
-    const endedEvents = await checkForRainEnd();
-
-    // 8. Send notifications
+    // 6. Auto-replace offline stations with nearby working ones
     const offlineStations = stationIds.filter(
       (sid) => !allObservations.some((o) => o.stationId === sid)
     );
+    let replacements: Awaited<ReturnType<typeof autoReplaceOfflineStations>> = [];
+    if (offlineStations.length > 0) {
+      replacements = await autoReplaceOfflineStations(config.weatherUnderground.apiKey);
+      if (replacements.length > 0) {
+        console.log(`Replaced ${replacements.length} offline station(s):`, replacements);
+        // Fetch observations from the new stations
+        for (const r of replacements) {
+          try {
+            const obs = await fetchObservations(r.newStation, config.weatherUnderground.apiKey);
+            allObservations.push(...obs);
+            const stored = await storeObservations(obs);
+            totalStored += stored;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            errors.push(`${r.newStation} (replacement): ${message}`);
+          }
+        }
+      }
+    }
+
+    // 7. Cross-validate precipitation — check for broken rain gauges
+    const trailsWithCoords = await sql`
+      SELECT primary_station_id, latitude, longitude FROM trails
+      WHERE is_archived = false AND updates_enabled = true
+        AND latitude IS NOT NULL AND longitude IS NOT NULL
+    `;
+    for (const obs of allObservations) {
+      const trail = trailsWithCoords.rows.find(
+        (t) => t.primary_station_id === obs.stationId
+      );
+      if (!trail) continue;
+      const lat = parseFloat(trail.latitude as string);
+      const lon = parseFloat(trail.longitude as string);
+      const result = await crossValidatePrecipitation(
+        obs.stationId, obs.precipitationIn, lat, lon, config.weatherUnderground.apiKey
+      );
+      if (result.adjusted) {
+        obs.precipitationIn = result.precipIn;
+      }
+    }
+
+    // 8. Run rain detection on all observations (Req 3.1)
+    const rainEvents = await evaluate(allObservations);
+
+    // 9. Check for rain end (60-min dry gap)
+    const endedEvents = await checkForRainEnd();
+
+    // 10. Send notifications
     if (offlineStations.length > stationIds.length * 0.5) {
       await notifyStationsDown(offlineStations, stationIds.length);
     }
@@ -112,6 +155,7 @@ export async function GET(request: Request) {
       stationsPolled: stationIds.length,
       observationsFetched: allObservations.length,
       observationsStored: totalStored,
+      stationsReplaced: replacements.length > 0 ? replacements : undefined,
       rainEventsCreatedOrUpdated: rainEvents.length,
       rainEventsEnded: endedEvents.length,
       errors: errors.length > 0 ? errors : undefined,

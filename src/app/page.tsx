@@ -37,15 +37,15 @@ export default async function DashboardPage() {
           <ul className="divide-y divide-gray-100 bg-white rounded-lg shadow-sm border border-gray-100">
             {trails.map((trail) => {
               const isRideable = trail.condition_status === 'Verified Rideable' || trail.condition_status === 'Probably Rideable';
-              const statusColor = isRideable ? 'text-green-100' : 'text-red-600';
-              const rowBg = isRideable ? 'bg-green-600 text-white' : 'bg-red-100';
+              const statusColor = 'text-white/80';
+              const rowBg = isRideable ? 'bg-green-600 text-white' : 'bg-red-600 text-white';
               const isDrying = trail.condition_status === 'Probably Not Rideable' || trail.condition_status === 'Probably Rideable';
 
               return (
                 <li key={trail.id} className={`flex items-center gap-2 px-3 py-2 ${rowBg}`}>
-                  <span className="font-medium text-sm text-gray-900 truncate flex-1">{trail.name}</span>
+                  <span className="font-medium text-sm truncate flex-1">{trail.name}</span>
                   {isDrying && trail.predicted_dry_time ? (
-                    <span className="text-xs text-gray-500 w-28 text-right shrink-0">
+                    <span className="text-xs text-white/70 w-28 text-right shrink-0">
                       dry {new Date(trail.predicted_dry_time) > new Date()
                         ? formatDistanceToNow(new Date(trail.predicted_dry_time), { addSuffix: true })
                         : 'soon'}
@@ -54,9 +54,9 @@ export default async function DashboardPage() {
                     <span className="w-28 shrink-0" />
                   )}
                   <span className={`text-xs font-medium w-20 text-right shrink-0 ${statusColor}`}>
-                    {trail.condition_status.replace('Verified ', '').replace('Probably ', '~')}
+                    {trail.condition_status === 'Closed' ? 'Closed' : trail.condition_status.replace('Verified ', '').replace('Probably ', '~')}
                   </span>
-                  <span className={`text-xs w-24 text-right shrink-0 ${isRideable ? 'text-green-100' : 'text-gray-400'}`}>
+                  <span className={`text-xs w-24 text-right shrink-0 text-white/70`}>
                     {format(new Date(trail.updated_at), 'M/d h:mma')}
                   </span>
                 </li>

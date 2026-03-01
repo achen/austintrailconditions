@@ -59,7 +59,14 @@ async function run() {
 
       console.log(`Applying migration: ${file}`);
       // neon() tagged template can't run raw SQL strings, so use the query method
-      await sql(migrationSql);
+      // Split on semicolons and run each statement separately
+      const statements = migrationSql
+        .split(';')
+        .map(s => s.trim())
+        .filter(s => s.length > 0 && !s.startsWith('--'));
+      for (const stmt of statements) {
+        await sql.query(stmt);
+      }
       await sql`INSERT INTO _migrations (name) VALUES (${file})`;
       console.log(`Applied: ${file}`);
       ranCount++;

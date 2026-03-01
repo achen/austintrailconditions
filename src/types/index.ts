@@ -6,7 +6,8 @@ export type ConditionStatus =
   | 'Verified Rideable'
   | 'Probably Rideable'
   | 'Probably Not Rideable'
-  | 'Verified Not Rideable';
+  | 'Verified Not Rideable'
+  | 'Closed';
 
 // --- Classification ---
 
