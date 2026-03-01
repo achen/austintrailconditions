@@ -2,24 +2,24 @@
 /**
  * Facebook Group Scraper for Austin Trail Conditions.
  *
- * Launches Puppeteer using your real Chrome profile (already logged into Facebook),
- * scrapes the group feed, and POSTs extracted posts to the trail conditions API.
+ * Uses your system Chrome (not Puppeteer's bundled Chromium) with a
+ * separate profile directory copied from your real one. This means:
+ *   - No cookie export needed — it copies your logged-in session
+ *   - Chrome can stay open while this runs (separate profile dir)
+ *   - Uses your real Chrome binary so profile format matches
  *
  * Setup:
  *   1. cd scraper && npm install
  *   2. cp .env.example .env — fill in API_URL and API_SECRET
- *   3. Make sure you're logged into Facebook in Chrome
- *   4. CLOSE Chrome before running (Puppeteer needs exclusive access to the profile)
- *   5. node scrape.js
+ *   3. Log into Facebook in Chrome on this machine
+ *   4. node scrape.js  (first run copies your Chrome profile)
  *
  * Crontab example (every 2h from 6am–8pm CT):
  *   0 6,8,10,12,14,16,18,20 * * * cd /path/to/scraper && node scrape.js >> scrape.log 2>&1
- *
- * NOTE: Chrome must not be running when this script starts. If you use Chrome
- * during the day, set HEADLESS=false and let the script open/close Chrome itself.
  */
 
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -46,11 +46,79 @@ const FB_GROUP = 'https://www.facebook.com/groups/325119181430845';
 const SCROLL_COUNT = parseInt(process.env.SCROLL_COUNT || '8', 10);
 const HEADLESS = process.env.HEADLESS !== 'false'; // default true
 
-// Chrome user data directory — where your logged-in session lives
-const DEFAULT_CHROME_PROFILE = path.join(os.homedir(), '.config', 'google-chrome');
-const CHROME_PROFILE = process.env.CHROME_PROFILE || DEFAULT_CHROME_PROFILE;
+// Source Chrome profile (your real logged-in session)
+const SOURCE_PROFILE = process.env.CHROME_PROFILE || path.join(os.homedir(), '.config', 'google-chrome');
+// Separate profile dir for the scraper (won't conflict with running Chrome)
+const SCRAPER_PROFILE = path.join(__dirname, '.chrome-profile');
 
 if (!API_SECRET) { console.error('Missing API_SECRET in .env'); process.exit(1); }
+
+// ── Find system Chrome ───────────────────────────────────────────────
+
+function findChrome() {
+  const candidates = [
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/snap/bin/chromium',
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  // Try which
+  try {
+    return execSync('which google-chrome || which chromium-browser || which chromium', { encoding: 'utf-8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+// ── Copy Chrome profile (cookies + session) ──────────────────────────
+
+function syncProfile() {
+  if (!fs.existsSync(SOURCE_PROFILE)) {
+    log(`ERROR: Chrome profile not found at ${SOURCE_PROFILE}`);
+    log('Log into Facebook in Chrome first, then try again.');
+    process.exit(1);
+  }
+
+  // Copy just the Default profile (cookies, local storage, etc.)
+  // This is ~50-200MB, not the full multi-GB cache
+  const src = path.join(SOURCE_PROFILE, 'Default');
+  const dest = path.join(SCRAPER_PROFILE, 'Default');
+
+  if (!fs.existsSync(src)) {
+    log(`ERROR: No Default profile found at ${src}`);
+    process.exit(1);
+  }
+
+  log('Syncing Chrome profile (cookies & session)...');
+  // Use rsync for speed — only copies changed files
+  try {
+    execSync(`rsync -a --delete \
+      --include="Cookies" \
+      --include="Cookies-journal" \
+      --include="Login Data" \
+      --include="Login Data-journal" \
+      --include="Local Storage/***" \
+      --include="Session Storage/***" \
+      --include="Preferences" \
+      --include="Secure Preferences" \
+      --include="Local Storage/" \
+      --include="Session Storage/" \
+      --exclude="*" \
+      "${src}/" "${dest}/"`, { stdio: 'pipe' });
+    log('Profile synced.');
+  } catch (err) {
+    // Fallback: just copy the whole Default folder
+    log('rsync selective copy failed, doing full copy...');
+    execSync(`mkdir -p "${dest}" && cp -r "${src}/Cookies" "${src}/Cookies-journal" "${dest}/" 2>/dev/null || true`);
+    execSync(`cp -r "${src}/Local Storage" "${dest}/" 2>/dev/null || true`);
+    execSync(`cp -r "${src}/Preferences" "${dest}/" 2>/dev/null || true`);
+    log('Profile copied (fallback).');
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -129,20 +197,23 @@ function extractPostsFromPage() {
 
 async function scrape() {
   log('Starting Facebook group scrape');
-  log(`Using Chrome profile: ${CHROME_PROFILE}`);
 
-  if (!fs.existsSync(CHROME_PROFILE)) {
-    log(`ERROR: Chrome profile not found at ${CHROME_PROFILE}`);
-    log('Make sure you have Chrome installed and have logged into Facebook at least once.');
-    log('Or set CHROME_PROFILE in .env to point to your Chrome user data directory.');
+  const chromePath = findChrome();
+  if (!chromePath) {
+    log('ERROR: Could not find Chrome or Chromium. Install google-chrome or chromium.');
     process.exit(1);
   }
+  log(`Using Chrome: ${chromePath}`);
+
+  // Sync cookies/session from your real Chrome profile
+  syncProfile();
 
   let browser;
   try {
     browser = await puppeteer.launch({
       headless: HEADLESS ? 'new' : false,
-      userDataDir: CHROME_PROFILE,
+      executablePath: chromePath,
+      userDataDir: SCRAPER_PROFILE,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -154,7 +225,6 @@ async function scrape() {
 
     const page = await browser.newPage();
 
-    // Stealth: hide webdriver flag
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
@@ -163,7 +233,6 @@ async function scrape() {
     await page.goto(FB_GROUP, { waitUntil: 'networkidle2', timeout: 60000 });
     await randomDelay(3000, 5000);
 
-    // Check if we hit a login page (not logged in)
     const url = page.url();
     if (url.includes('/login')) {
       log('ERROR: Not logged into Facebook! Open Chrome, log in manually, then try again.');

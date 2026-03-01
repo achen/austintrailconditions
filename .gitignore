@@ -16,6 +16,7 @@ out/
 scraper/.env
 scraper/scrape.log
 scraper/node_modules/
+scraper/.chrome-profile/
 
 # misc
 .DS_Store

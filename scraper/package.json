@@ -6,6 +6,6 @@
     "scrape": "node scrape.js"
   },
   "dependencies": {
-    "puppeteer": "^23.0.0"
+    "puppeteer-core": "^24.15.0"
   }
 }
