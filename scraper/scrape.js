@@ -131,66 +131,99 @@ function randomDelay(minMs, maxMs) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ── Post extraction (runs in browser context) ────────────────────────
+// ── Post + comment extraction (runs in browser context) ──────────────
 
 function extractPostsFromPage() {
-  const articles = document.querySelectorAll('div[role="article"]');
-  const posts = [];
+  const results = [];
 
-  for (const article of articles) {
+  // Helper: extract text, author, id, timestamp from an article element
+  function parseArticle(article, parentPostId) {
+    let postText = '';
+    const textEls = article.querySelectorAll('div[dir="auto"]');
+    for (const el of textEls) {
+      const text = (el.textContent || '').trim();
+      if (text.length > 20 && text.length > postText.length) {
+        postText = text;
+      }
+    }
+    if (!postText || postText.length < 10) return null;
+
+    let authorName = 'Unknown';
+    const authorEl = article.querySelector('h3 a strong, h4 a strong, a[role="link"] strong, span.x3nfvp2 a strong');
+    if (authorEl) {
+      const name = (authorEl.textContent || '').trim();
+      if (name.length > 0 && name.length < 100) authorName = name;
+    }
+
+    let postId = '';
+    const links = article.querySelectorAll('a[href]');
+    for (const link of links) {
+      const href = link.getAttribute('href') || '';
+      const match = href.match(/\/permalink\/(\d+)|\/posts\/(\d+)|story_fbid=(\d+)|comment_id=(\d+)/);
+      if (match) {
+        postId = match[1] || match[2] || match[3] || match[4];
+        break;
+      }
+    }
+    if (!postId) {
+      postId = 'pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    // If this is a comment, prefix the ID so we can tell them apart
+    if (parentPostId) {
+      postId = 'c-' + postId;
+    }
+
+    let timestamp = new Date().toISOString();
+    const timeEl = article.querySelector('a[href*="/permalink/"] span, a[href*="comment_id"] span, abbr[data-utime], time[datetime]');
+    if (timeEl) {
+      const utime = timeEl.getAttribute('data-utime');
+      const datetime = timeEl.getAttribute('datetime');
+      if (utime) {
+        timestamp = new Date(parseInt(utime) * 1000).toISOString();
+      } else if (datetime) {
+        timestamp = new Date(datetime).toISOString();
+      }
+    }
+
+    return {
+      postId,
+      authorName,
+      postText: postText.slice(0, 2000),
+      timestamp,
+      isComment: !!parentPostId,
+      parentPostId: parentPostId || null,
+    };
+  }
+
+  // Get top-level posts
+  const topLevelArticles = document.querySelectorAll('div[role="article"]');
+
+  for (const article of topLevelArticles) {
     try {
+      // Skip if this is a nested article (comment) — we'll get those from the parent
       if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
 
-      let postText = '';
-      const textEls = article.querySelectorAll('div[dir="auto"]');
-      for (const el of textEls) {
-        const text = (el.textContent || '').trim();
-        if (text.length > 20 && text.length > postText.length) {
-          postText = text;
+      const post = parseArticle(article, null);
+      if (!post) continue;
+      results.push(post);
+
+      // Now get comments inside this post
+      const commentArticles = article.querySelectorAll('div[role="article"]');
+      for (const commentEl of commentArticles) {
+        try {
+          const comment = parseArticle(commentEl, post.postId);
+          if (comment) results.push(comment);
+        } catch (e) {
+          // skip bad comment
         }
       }
-      if (!postText || postText.length < 10) continue;
-
-      let authorName = 'Unknown';
-      const authorEl = article.querySelector('h3 a strong, h4 a strong, a[role="link"] strong');
-      if (authorEl) {
-        const name = (authorEl.textContent || '').trim();
-        if (name.length > 0 && name.length < 100) authorName = name;
-      }
-
-      let postId = '';
-      const links = article.querySelectorAll('a[href]');
-      for (const link of links) {
-        const href = link.getAttribute('href') || '';
-        const match = href.match(/\/permalink\/(\d+)|\/posts\/(\d+)|story_fbid=(\d+)/);
-        if (match) {
-          postId = match[1] || match[2] || match[3];
-          break;
-        }
-      }
-      if (!postId) {
-        postId = 'pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-      }
-
-      let timestamp = new Date().toISOString();
-      const timeEl = article.querySelector('a[href*="/permalink/"] span, abbr[data-utime], time[datetime]');
-      if (timeEl) {
-        const utime = timeEl.getAttribute('data-utime');
-        const datetime = timeEl.getAttribute('datetime');
-        if (utime) {
-          timestamp = new Date(parseInt(utime) * 1000).toISOString();
-        } else if (datetime) {
-          timestamp = new Date(datetime).toISOString();
-        }
-      }
-
-      posts.push({ postId, authorName, postText: postText.slice(0, 2000), timestamp });
     } catch (e) {
       // skip malformed post
     }
   }
 
-  return posts;
+  return results;
 }
 
 // ── Main scrape function ─────────────────────────────────────────────
@@ -240,7 +273,52 @@ async function scrape() {
       process.exit(2);
     }
 
-    log('Page loaded, starting scroll...');
+    // Sort by "New" instead of Facebook's default algorithm
+    log('Switching to New posts sort order...');
+    try {
+      // Look for the sort button — it usually says "Relevant", "Top Posts", or has a sort icon
+      const sortClicked = await page.evaluate(() => {
+        // Facebook group sort is typically a button/link near the top with text like
+        // "Relevant" or "New" or inside a menu
+        const buttons = Array.from(document.querySelectorAll('div[role="button"], span[role="button"], a[role="button"]'));
+        for (const btn of buttons) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          if (text === 'relevant' || text === 'top posts' || text === 'recent activity') {
+            btn.click();
+            return 'clicked-sort-button';
+          }
+        }
+        return null;
+      });
+
+      if (sortClicked) {
+        await randomDelay(1500, 2500);
+        // Now click "New" in the dropdown menu
+        const newClicked = await page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], div[role="menuitemradio"], span'));
+          for (const item of items) {
+            const text = (item.textContent || '').trim().toLowerCase();
+            if (text === 'new' || text === 'newest' || text === 'new posts') {
+              item.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (newClicked) {
+          log('Sorted by New posts.');
+          await randomDelay(2000, 3000);
+        } else {
+          log('Could not find "New" option in dropdown — using default sort.');
+        }
+      } else {
+        log('Sort button not found — using default sort.');
+      }
+    } catch (e) {
+      log('Sort switch failed (non-fatal): ' + e.message);
+    }
+
+    log('Starting scroll...');
 
     for (let i = 0; i < SCROLL_COUNT; i++) {
       const scrollAmount = 600 + Math.floor(Math.random() * 800);
@@ -253,8 +331,38 @@ async function scrape() {
 
     await randomDelay(2000, 3000);
 
+    // Expand comments on visible posts before extracting
+    log('Expanding comments...');
+    const expandedCount = await page.evaluate(async () => {
+      let clicked = 0;
+      // Click "View more comments", "View all X comments", etc.
+      for (let round = 0; round < 3; round++) {
+        const expanders = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'));
+        for (const btn of expanders) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          if (
+            text.includes('view more comment') ||
+            text.includes('view all') ||
+            text.match(/view \d+ more comment/) ||
+            text.match(/\d+ repl/)
+          ) {
+            btn.click();
+            clicked++;
+            await new Promise(r => setTimeout(r, 800 + Math.random() * 600));
+          }
+        }
+        if (clicked === 0) break;
+        await new Promise(r => setTimeout(r, 1500));
+      }
+      return clicked;
+    });
+    log(`Expanded ${expandedCount} comment sections.`);
+    await randomDelay(1500, 2500);
+
     const posts = await page.evaluate(extractPostsFromPage);
-    log(`Extracted ${posts.length} posts from page`);
+    const postCount = posts.filter(p => !p.isComment).length;
+    const commentCount = posts.filter(p => p.isComment).length;
+    log(`Extracted ${postCount} posts + ${commentCount} comments = ${posts.length} total`);
 
     if (posts.length === 0) {
       log('No posts found. Try running with HEADLESS=false to see what the page looks like.');
