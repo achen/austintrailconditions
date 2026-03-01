@@ -7,6 +7,7 @@ import {
   shouldPollFrequently,
 } from '@/services/weather-collector';
 import { evaluate, checkForRainEnd } from '@/services/rain-detector';
+import { notifyStationsDown, notifyCronFailure, notifyRainDetected } from '@/services/notification-service';
 import { sql } from '@/lib/db';
 import { WeatherObservation } from '@/types';
 
@@ -93,6 +94,19 @@ export async function GET(request: Request) {
     // 7. Check for rain end (60-min dry gap)
     const endedEvents = await checkForRainEnd();
 
+    // 8. Send notifications
+    const offlineStations = stationIds.filter(
+      (sid) => !allObservations.some((o) => o.stationId === sid)
+    );
+    if (offlineStations.length > stationIds.length * 0.5) {
+      await notifyStationsDown(offlineStations, stationIds.length);
+    }
+
+    if (rainEvents.length > 0) {
+      const totalPrecip = allObservations.reduce((sum, o) => sum + o.precipitationIn, 0);
+      await notifyRainDetected(rainEvents.length, totalPrecip);
+    }
+
     return NextResponse.json({
       success: true,
       stationsPolled: stationIds.length,
@@ -105,6 +119,7 @@ export async function GET(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Weather cron failed: ${message}`);
+    await notifyCronFailure('weather', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

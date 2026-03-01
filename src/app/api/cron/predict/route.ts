@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { validateConfig } from '@/services/config-validator';
 import { updatePredictions, recordActualOutcome } from '@/services/prediction-engine';
 import { listActive } from '@/services/trail-service';
+import { notifyCronFailure } from '@/services/notification-service';
 import { sql } from '@/lib/db';
 
 /**
@@ -126,6 +127,7 @@ export async function GET(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Prediction cron failed: ${message}`);
+    await notifyCronFailure('predict', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

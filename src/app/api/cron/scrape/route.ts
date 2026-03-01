@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { scrapeAllTrailStatuses } from '@/services/trail-status-scraper';
+import { notifyCronFailure } from '@/services/notification-service';
 
 /**
  * GET /api/cron/scrape
@@ -23,6 +24,7 @@ export async function GET(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('Scrape cron failed:', message);
+    await notifyCronFailure('scrape', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
