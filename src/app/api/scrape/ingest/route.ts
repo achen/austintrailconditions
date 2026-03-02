@@ -50,14 +50,27 @@ export async function POST(request: Request) {
 
     // Classify if OpenAI is configured
     let classified = 0;
+    const unmatchedPosts: Array<{ postId: string; text: string; classification: string }> = [];
+
     if (process.env.OPENAI_API_KEY) {
       const activeTrails = await listActive();
       const knownTrailNames = activeTrails.map((t) => t.name);
 
       for (const post of posts) {
         try {
-          await classify(post, knownTrailNames);
+          const result = await classify(post, knownTrailNames);
           classified++;
+          // Track posts classified as dry/wet but with no trail match
+          if (
+            (result.classification === 'dry' || result.classification === 'wet') &&
+            result.trailReferences.length === 0
+          ) {
+            unmatchedPosts.push({
+              postId: result.postId,
+              text: post.postText.slice(0, 200),
+              classification: result.classification,
+            });
+          }
         } catch (err) {
           console.error(`Classification failed for ${post.postId}:`, err);
         }
@@ -73,6 +86,7 @@ export async function POST(request: Request) {
       stored,
       classified,
       verified: verifications.length,
+      unmatchedPosts: unmatchedPosts.length > 0 ? unmatchedPosts : undefined,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

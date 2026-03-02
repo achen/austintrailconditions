@@ -521,13 +521,27 @@ async function scrape() {
       return `<tr style="${style}"><td style="padding:4px 8px">${name}</td><td style="padding:4px 8px">${label}</td></tr>`;
     }).join('');
 
+    // Build unmatched posts section (trail-related but no trail identified)
+    const unmatched = result.unmatchedPosts || [];
+    const unmatchedHtml = unmatched.length > 0
+      ? `<h3>⚠️ Unmatched Posts (${unmatched.length})</h3>
+         <p style="font-size:12px;color:#666">These posts seem trail-related but couldn't be matched to a specific trail. You may need to add aliases.</p>
+         <table style="border-collapse:collapse;font-size:13px;width:100%">
+           <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Type</th><th style="padding:4px 8px;text-align:left">Post</th></tr>
+           ${unmatched.map(p => `<tr><td style="padding:4px 8px;vertical-align:top;color:${p.classification === 'dry' ? 'green' : 'red'}">${p.classification}</td><td style="padding:4px 8px">${p.text}</td></tr>`).join('')}
+         </table>`
+      : '';
+
     const subject = changedCount > 0
       ? `${changedCount} trail status change${changedCount > 1 ? 's' : ''} — ${postCount} posts, ${commentCount} comments`
-      : `${postCount} posts, ${commentCount} comments — no status changes`;
+      : unmatched.length > 0
+        ? `${unmatched.length} unmatched post${unmatched.length > 1 ? 's' : ''} — ${postCount} posts, ${commentCount} comments`
+        : `${postCount} posts, ${commentCount} comments — no status changes`;
 
     await sendEmail(subject,
       `<h3>Scraper Run Complete</h3>
        <p>Posts: ${postCount} · Comments: ${commentCount} · Scrolls: ${scrollCount} · New stored: ${result.stored} · Classified: ${result.classified}</p>
+       ${unmatchedHtml}
        <h3>Trail Statuses${changedCount > 0 ? ` (${changedCount} changed)` : ''}</h3>
        <table style="border-collapse:collapse;font-size:14px">
          <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Trail</th><th style="padding:4px 8px;text-align:left">Status</th></tr>
