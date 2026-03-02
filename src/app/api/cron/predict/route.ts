@@ -28,7 +28,10 @@ export async function GET(request: Request) {
     // 2. Validate configuration
     validateConfig();
 
-    // 3. Update predictions for all drying trails (Req 4.3, 4.4)
+    // 3. Expire stale "Verified Not Rideable" statuses
+    const expired = await expireStaleVerifications();
+
+    // 4. Update predictions for all drying trails (Req 4.3, 4.4)
     const updatedPredictions = await updatePredictions();
 
     // 4. Get active trails for name matching
@@ -119,6 +122,7 @@ export async function GET(request: Request) {
     // 6. Return summary response
     return NextResponse.json({
       success: true,
+      expiredVerifications: expired.length > 0 ? expired : undefined,
       predictionsUpdated: updatedPredictions.length,
       reportsProcessed: reportsResult.rows.length,
       dryReportsProcessed,

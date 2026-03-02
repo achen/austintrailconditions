@@ -3,7 +3,7 @@ import { fetchGroupPosts } from '@/services/facebook-scraper';
 import { storePosts } from '@/services/post-collector';
 import { classify } from '@/services/post-classifier';
 import { listActive } from '@/services/trail-service';
-import { applyVerifiedStatuses } from '@/services/trail-verifier';
+import { applyVerifiedStatuses, expireStaleVerifications } from '@/services/trail-verifier';
 import { sql } from '@/lib/db';
 import { notifyCronFailure } from '@/services/notification-service';
 import { TrailReport } from '@/types';
@@ -117,6 +117,9 @@ export async function GET(request: Request) {
 
     // 6. Apply verified statuses based on classified posts
     const verifications = await applyVerifiedStatuses();
+
+    // 7. Expire stale "Verified Not Rideable" statuses
+    const expired = await expireStaleVerifications();
 
     return NextResponse.json({
       success: true,

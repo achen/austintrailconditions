@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { storePosts } from '@/services/post-collector';
 import { classify } from '@/services/post-classifier';
 import { listActive } from '@/services/trail-service';
-import { applyVerifiedStatuses } from '@/services/trail-verifier';
+import { applyVerifiedStatuses, expireStaleVerifications } from '@/services/trail-verifier';
 import { TrailReport } from '@/types';
 
 interface IngestPost {
@@ -84,6 +84,9 @@ export async function POST(request: Request) {
     }
 
     const verifications = await applyVerifiedStatuses();
+
+    // Expire stale "Verified Not Rideable" statuses
+    await expireStaleVerifications();
 
     // Build a map of trail status changes from verifications
     const statusChanges: Record<string, string> = {};
