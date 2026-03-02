@@ -264,51 +264,56 @@ async function scrape() {
 
     // Debug mode: dump first article HTML and exit (before sort)
     if (process.env.DEBUG_FIRST === 'true') {
-      log('DEBUG_FIRST mode — waiting for a real post to load...');
+      log('DEBUG_FIRST mode — dumping what we see right now...');
+      await randomDelay(3000, 5000); // just give FB a few seconds
 
-      // Wait for at least one article with actual text content (not a loading skeleton)
-      await page.waitForFunction(() => {
-        for (const article of document.querySelectorAll('div[role="article"]')) {
-          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-          if (article.querySelector('div[dir="auto"]') && article.innerText.trim().length > 50) return true;
-        }
-        return false;
-      }, { timeout: 20000 }).catch(() => log('No real articles found after 20s.'));
-
-      // Dump all article info
+      // Raw dump: how many articles, what do they look like?
       const debugInfo = await page.evaluate(() => {
-        const articles = document.querySelectorAll('div[role="article"]');
-        const info = [];
-        for (const article of articles) {
-          const isNested = article.parentElement && article.parentElement.closest('div[role="article"]');
-          const hasDirAuto = !!article.querySelector('div[dir="auto"]');
+        const allArticles = document.querySelectorAll('div[role="article"]');
+        const results = [];
+        for (const article of allArticles) {
+          const parent = article.parentElement;
+          const isNested = parent ? !!parent.closest('div[role="article"]') : false;
+          const dirAutoEls = article.querySelectorAll('div[dir="auto"]');
           const hasLoading = !!article.querySelector('[aria-label="Loading..."]');
-          const textLen = (article.textContent || '').length;
-          const htmlLen = article.innerHTML.length;
-          info.push({ isNested: !!isNested, hasDirAuto, hasLoading, textLen, htmlLen });
+          const text = (article.innerText || '').trim();
+          const textContent = (article.textContent || '').trim();
+          results.push({
+            isNested,
+            dirAutoCount: dirAutoEls.length,
+            hasLoading,
+            innerTextLen: text.length,
+            textContentLen: textContent.length,
+            htmlLen: article.innerHTML.length,
+            first100text: text.slice(0, 100),
+            first100textContent: textContent.slice(0, 100),
+          });
         }
-        return info;
+        return results;
       });
-      log(`Found ${debugInfo.length} total article elements:`);
-      debugInfo.forEach((a, i) => log(`  #${i}: nested=${a.isNested} dirAuto=${a.hasDirAuto} loading=${a.hasLoading} text=${a.textLen} html=${a.htmlLen}`));
 
-      // Print first real article HTML
+      log(`Found ${debugInfo.length} article elements:`);
+      for (let i = 0; i < debugInfo.length; i++) {
+        const a = debugInfo[i];
+        log(`  #${i}: nested=${a.isNested} dirAuto=${a.dirAutoCount} loading=${a.hasLoading} innerText=${a.innerTextLen} textContent=${a.textContentLen} html=${a.htmlLen}`);
+        log(`    innerText: "${a.first100text}"`);
+        log(`    textContent: "${a.first100textContent}"`);
+      }
+
+      // Print first non-nested article HTML regardless
       const firstHtml = await page.evaluate(() => {
         for (const article of document.querySelectorAll('div[role="article"]')) {
-          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-          if (article.querySelector('div[dir="auto"]')) return article.outerHTML;
-        }
-        // Fallback: first non-nested article regardless
-        for (const article of document.querySelectorAll('div[role="article"]')) {
-          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-          return article.outerHTML;
+          const parent = article.parentElement;
+          const isNested = parent ? !!parent.closest('div[role="article"]') : false;
+          if (!isNested) return article.outerHTML;
         }
         return null;
       });
       if (firstHtml) {
+        log(`First article HTML length: ${firstHtml.length}`);
         console.log(firstHtml);
       } else {
-        log('No top-level articles found!');
+        log('No articles found at all!');
       }
       await browser.close();
       process.exit(0);
