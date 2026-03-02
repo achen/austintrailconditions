@@ -379,52 +379,57 @@ async function scrape() {
       process.exit(2);
     }
 
-    // Sort by "New" instead of Facebook's default algorithm
-    log('Switching to New posts sort order...');
+    // Sort by "Recent activity" to surface posts with new comments
+    log('Switching to Recent activity sort order...');
     try {
-      // Look for the sort button — it usually says "Relevant", "Top Posts", or has a sort icon
+      // The sort control shows as "New posts ▾" or "Most relevant ▾" — it's a clickable dropdown
       const sortClicked = await page.evaluate(() => {
-        // Facebook group sort is typically a button/link near the top with text like
-        // "Relevant" or "New" or inside a menu
-        const buttons = Array.from(document.querySelectorAll('div[role="button"], span[role="button"], a[role="button"]'));
-        for (const btn of buttons) {
-          const text = (btn.textContent || '').trim().toLowerCase();
-          if (text === 'relevant' || text === 'top posts' || text === 'recent activity') {
-            btn.click();
-            return 'clicked-sort-button';
+        // Look for the sort dropdown — text like "New posts", "Most relevant", or "Recent activity"
+        // followed by a dropdown arrow. It's typically a span or div that's clickable.
+        const allEls = Array.from(document.querySelectorAll('span, div'));
+        for (const el of allEls) {
+          const text = (el.textContent || '').trim().toLowerCase();
+          if ((text === 'new posts' || text === 'most relevant' || text === 'recent activity') &&
+              el.offsetParent !== null) {
+            // Check if this element or a close parent is clickable
+            const clickTarget = el.closest('[role="button"]') || el;
+            clickTarget.click();
+            return text;
           }
         }
         return null;
       });
 
       if (sortClicked) {
+        log(`Clicked sort dropdown (was: "${sortClicked}").`);
         await randomDelay(1500, 2500);
-        // Now click "New" in the dropdown menu
-        const newClicked = await page.evaluate(() => {
-          const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], div[role="menuitemradio"], span'));
+
+        // Now click "Recent activity" in the dropdown menu
+        const picked = await page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], div[role="menuitemradio"], div[role="radio"], span'));
           for (const item of items) {
             const text = (item.textContent || '').trim().toLowerCase();
-            if (text === 'new' || text === 'newest' || text === 'new posts') {
+            if (text === 'recent activity' || text.startsWith('recent activity')) {
               item.click();
               return true;
             }
           }
           return false;
         });
-        if (newClicked) {
-          log('Sorted by New posts.');
+        if (picked) {
+          log('Sorted by Recent activity.');
           await randomDelay(2000, 3000);
         } else {
-          log('Could not find "New" option in dropdown — using default sort.');
+          log('Could not find "Recent activity" in dropdown — using current sort.');
         }
       } else {
-        log('Sort button not found — using default sort.');
+        log('Sort dropdown not found — using default sort.');
       }
     } catch (e) {
       log('Sort switch failed (non-fatal): ' + e.message);
     }
 
-    log('Scrolling until we find known posts...');
+    log('Checking for known posts...');
 
     const seenData = loadSeenPosts();
     log(`Loaded ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} text fingerprints.`);
@@ -432,15 +437,15 @@ async function scrape() {
     let foundKnown = false;
     let scrollCount = 0;
 
-    // Extract post IDs AND text snippets from visible top-level posts
+    // Extract post text fingerprints from visible top-level posts
+    // Uses the SAME normalization as textFingerprint() so matches work
     const getVisiblePostSignatures = () => page.evaluate(() => {
       const results = [];
       const articles = document.querySelectorAll('div[role="article"]');
       for (const article of articles) {
-        // Skip nested articles (comments)
         if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
 
-        // Try to get a permalink-based ID
+        // Get permalink ID if available
         let postId = null;
         const links = article.querySelectorAll('a[href]');
         for (const link of links) {
@@ -452,23 +457,43 @@ async function scrape() {
           }
         }
 
-        // Get text fingerprint (first 100 chars, normalized)
+        // Get ALL text from div[dir="auto"] and pick the longest
         let text = '';
         const textEls = article.querySelectorAll('div[dir="auto"]');
         for (const el of textEls) {
           const t = (el.textContent || '').trim();
-          if (t.length > 20 && t.length > text.length) text = t;
+          if (t.length > text.length) text = t;
         }
+        // Same normalization as textFingerprint()
         const fingerprint = text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 100);
 
-        if (postId || fingerprint.length >= 20) {
+        if (postId || fingerprint.length > 0) {
           results.push({ postId, fingerprint });
         }
       }
       return results;
     });
 
-    while (scrollCount < MAX_SCROLLS) {
+    // Check BEFORE scrolling — if the initial page already has known posts, stop immediately
+    if (hasPriorData) {
+      await randomDelay(1000, 2000);
+      const initialVisible = await getVisiblePostSignatures();
+      let initialKnown = 0;
+      for (const v of initialVisible) {
+        if ((v.postId && seenData.ids.has(v.postId)) ||
+            (v.fingerprint.length > 0 && seenData.fingerprints.has(v.fingerprint))) {
+          initialKnown++;
+        }
+      }
+      if (initialKnown >= 2) {
+        log(`Found ${initialKnown} known posts on initial page load — already caught up.`);
+        foundKnown = true;
+      } else {
+        log(`${initialKnown} known post(s) on initial load, scrolling for more...`);
+      }
+    }
+
+    while (!foundKnown && scrollCount < MAX_SCROLLS) {
       const scrollAmount = 600 + Math.floor(Math.random() * 800);
       await page.evaluate((amount) => window.scrollBy(0, amount), scrollAmount);
       scrollCount++;
@@ -477,13 +502,12 @@ async function scrape() {
       log(`Scroll ${scrollCount}/${MAX_SCROLLS}, waiting ${Math.round(delay)}ms...`);
       await randomDelay(delay, delay + 500);
 
-      // Check if any visible posts match by ID or text fingerprint
       if (hasPriorData) {
         const visible = await getVisiblePostSignatures();
         let knownCount = 0;
         for (const v of visible) {
           if ((v.postId && seenData.ids.has(v.postId)) ||
-              (v.fingerprint && seenData.fingerprints.has(v.fingerprint))) {
+              (v.fingerprint.length > 0 && seenData.fingerprints.has(v.fingerprint))) {
             knownCount++;
           }
         }
@@ -555,7 +579,7 @@ async function scrape() {
       if (!p.isComment) {
         seenData.ids.add(p.postId);
         const fp = textFingerprint(p.postText);
-        if (fp.length >= 20) seenData.fingerprints.add(fp);
+        if (fp.length > 0) seenData.fingerprints.add(fp);
       }
     }
     saveSeenPosts(seenData);
