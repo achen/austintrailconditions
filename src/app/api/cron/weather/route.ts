@@ -73,7 +73,7 @@ export async function GET(request: Request) {
       pollAfterUtc = cachedAfter ? new Date(cachedAfter) : null;
       pollUntilUtc = cachedUntil ? new Date(cachedUntil) : null;
     } else {
-      // 1 API call per day (+ 1 hourly call if rain found)
+      // 1 API call per day (5-day daily forecast, daypart granularity)
       const forecast = await isRainForecast(config.weatherUnderground.apiKey);
       rainExpected = forecast.rainExpected;
       pollAfterUtc = forecast.pollAfterUtc;

@@ -175,6 +175,21 @@ export async function shouldPollFrequently(): Promise<boolean> {
  *
  * Total: 1 API call on dry days, 2 API calls when rain is coming.
  */
+export /**
+ * Check the WU 5-day daily forecast for Austin to determine if/when rain is expected.
+ *
+ * The PWS contributor API only provides the 5-day daily forecast (not hourly).
+ * Dayparts alternate: index 0 = day 1 day, 1 = day 1 night, 2 = day 2 day, etc.
+ * Day = 7am-7pm CT, Night = 7pm-7am CT.
+ *
+ * Algorithm:
+ * - Find the first daypart with ≥30% precip chance
+ * - Calculate the start of that daypart in UTC (day: 13:00 UTC / 7am CT, night: 01:00 UTC next day / 7pm CT)
+ * - If rain is >20h away, defer polling to tomorrow's forecast check
+ * - If rain is ≤20h away, set pollAfterUtc = daypart start - 4h, pollUntilUtc = daypart end + 3h
+ *
+ * Total: 1 API call per day.
+ */
 export async function isRainForecast(
   apiKey: string,
   baseUrl: string = process.env.WEATHER_API_BASE_URL || 'https://api.weather.com'
@@ -182,7 +197,6 @@ export async function isRainForecast(
   const dailyUrl = `${baseUrl}/v3/wx/forecast/daily/5day?geocode=30.27,-97.74&format=json&units=e&language=en-US&apiKey=${encodeURIComponent(apiKey)}`;
 
   try {
-    // Step 1: Check 5-day daily forecast
     const dailyResp = await fetch(dailyUrl, { signal: AbortSignal.timeout(10000) });
     if (!dailyResp.ok) {
       console.error(`Forecast API error: ${dailyResp.status}`);
@@ -207,76 +221,60 @@ export async function isRainForecast(
       return { rainExpected: false, maxChance, details: `5-day max precip: ${maxChance}% — no rain expected`, pollAfterUtc: null, pollUntilUtc: null };
     }
 
-    // Step 2: Rain found — get hourly forecast to find exact start and end hours
-    const hourlyUrl = `${baseUrl}/v3/wx/forecast/hourly/2day?geocode=30.27,-97.74&format=json&units=e&language=en-US&apiKey=${encodeURIComponent(apiKey)}`;
+    // Find the first and last dayparts with ≥30% chance to build the polling window
+    const now = new Date();
+    const startOfDayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
     let pollAfterUtc: Date | null = null;
     let pollUntilUtc: Date | null = null;
-    let rainHourDetail = '';
+    let rainDetail = '';
 
-    try {
-      const hourlyResp = await fetch(hourlyUrl, { signal: AbortSignal.timeout(10000) });
-      if (hourlyResp.ok) {
-        const hourlyData = await hourlyResp.json();
-        const validTimes = hourlyData.validTimeUtc as number[] | undefined;
-        const precipChances = hourlyData.precipChance as number[] | undefined;
+    for (let i = 0; i < dayParts.precipChance.length; i++) {
+      if (dayParts.precipChance[i] === null || dayParts.precipChance[i] < 30) continue;
 
-        if (validTimes && precipChances) {
-          // Find first and last hour with >= 30% chance
-          let lastRainIndex: number | null = null;
+      const dayOffset = Math.floor(i / 2);
+      const isNight = i % 2 === 1;
 
-          for (let i = 0; i < precipChances.length; i++) {
-            if (precipChances[i] >= 30) {
-              if (pollAfterUtc === null) {
-                const rainStartUtc = new Date(validTimes[i] * 1000);
-                pollAfterUtc = new Date(rainStartUtc.getTime() - 4 * 60 * 60 * 1000);
-                const rainStartCt = rainStartUtc.toLocaleString('en-US', {
-                  timeZone: 'America/Chicago',
-                  weekday: 'short', hour: 'numeric', minute: '2-digit',
-                });
-                rainHourDetail = ` Rain starts ~${rainStartCt}`;
-              }
-              lastRainIndex = i;
-            }
-          }
-
-          // Stop polling 3 hours after the last forecasted rain hour
-          if (lastRainIndex !== null) {
-            const rainEndUtc = new Date(validTimes[lastRainIndex] * 1000);
-            pollUntilUtc = new Date(rainEndUtc.getTime() + 3 * 60 * 60 * 1000);
-            const rainEndCt = rainEndUtc.toLocaleString('en-US', {
-              timeZone: 'America/Chicago',
-              weekday: 'short', hour: 'numeric', minute: '2-digit',
-            });
-            rainHourDetail += `, ends ~${rainEndCt}. Stop polling 3h after.`;
-          }
-        }
+      // Day daypart (7am-7pm CT) = 13:00-01:00 UTC
+      // Night daypart (7pm-7am CT) = 01:00-13:00 UTC (next day)
+      const dpStartUtc = new Date(startOfDayUtc);
+      if (isNight) {
+        // Night starts at 01:00 UTC on dayOffset+1 (= 7pm CT on dayOffset)
+        dpStartUtc.setUTCDate(dpStartUtc.getUTCDate() + dayOffset + 1);
+        dpStartUtc.setUTCHours(1, 0, 0, 0);
+      } else {
+        // Day starts at 13:00 UTC on dayOffset (= 7am CT)
+        dpStartUtc.setUTCDate(dpStartUtc.getUTCDate() + dayOffset);
+        dpStartUtc.setUTCHours(13, 0, 0, 0);
       }
-    } catch (err) {
-      console.error('Hourly forecast failed, using daypart estimate:', err instanceof Error ? err.message : err);
+
+      const dpEndUtc = new Date(dpStartUtc.getTime() + 12 * 60 * 60 * 1000);
+
+      if (!pollAfterUtc) {
+        // First rain daypart — set poll start
+        pollAfterUtc = new Date(dpStartUtc.getTime() - 4 * 60 * 60 * 1000);
+        const dayName = dpStartUtc.toLocaleString('en-US', {
+          timeZone: 'America/Chicago',
+          weekday: 'short',
+        });
+        rainDetail = `${dayName} ${isNight ? 'night' : 'day'} (${dayParts.precipChance[i]}%)`;
+      }
+
+      // Keep extending pollUntilUtc for each rain daypart
+      pollUntilUtc = new Date(dpEndUtc.getTime() + 3 * 60 * 60 * 1000);
     }
 
-    // Fallback to daypart estimate if hourly didn't work
-    if (!pollAfterUtc) {
-      for (let i = 0; i < dayParts.precipChance.length; i++) {
-        if (dayParts.precipChance[i] !== null && dayParts.precipChance[i] >= 30) {
-          const dayOffset = Math.floor(i / 2);
-          const isNight = i % 2 === 1;
-          const now = new Date();
-          const startOfDayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-          const rainStartUtcHour = isNight ? (19 + 6) % 24 : (7 + 6) % 24;
-          const rainStartUtc = new Date(startOfDayUtc);
-          rainStartUtc.setUTCDate(rainStartUtc.getUTCDate() + dayOffset);
-          rainStartUtc.setUTCHours(rainStartUtcHour, 0, 0, 0);
-          pollAfterUtc = new Date(rainStartUtc.getTime() - 4 * 60 * 60 * 1000);
-          // For daypart fallback, estimate rain lasts 12 hours + 3 hour buffer
-          pollUntilUtc = new Date(rainStartUtc.getTime() + 15 * 60 * 60 * 1000);
-          rainHourDetail = ` (daypart estimate, day ${dayOffset + 1} ${isNight ? 'night' : 'day'})`;
-          break;
-        }
-      }
+    const hoursUntilPoll = pollAfterUtc
+      ? (pollAfterUtc.getTime() - now.getTime()) / (1000 * 60 * 60)
+      : 0;
+
+    let details: string;
+    if (hoursUntilPoll > 20) {
+      details = `Rain ${maxChance}% — ${rainDetail}, ~${Math.round(hoursUntilPoll + 4)}h away. Polling deferred.`;
+    } else {
+      details = `Rain ${maxChance}% — ${rainDetail}. Poll after ${pollAfterUtc?.toISOString() ?? 'now'}, until ${pollUntilUtc?.toISOString() ?? 'unknown'}`;
     }
 
-    const details = `Rain ${maxChance}% in forecast.${rainHourDetail} Poll after ${pollAfterUtc?.toISOString() ?? 'now'}`;
     return { rainExpected: true, maxChance, details, pollAfterUtc, pollUntilUtc };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -284,4 +282,5 @@ export async function isRainForecast(
     return { rainExpected: true, maxChance: -1, details: `Error: ${msg}`, pollAfterUtc: new Date(), pollUntilUtc: null };
   }
 }
+
 
