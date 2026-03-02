@@ -81,33 +81,11 @@ export async function GET(request: Request) {
         // Rain in forecast — poll stations this hour
         console.log('Rain forecast for today/tomorrow, polling stations');
       } else {
-        // No rain expected — only poll once at midday CT for data points
-        const nowUtc = new Date();
-        const hourUtc = nowUtc.getUTCHours();
-        const isMidday = hourUtc === 17 || hourUtc === 18; // 12-1pm CT
-
-        const lastPollResult = await sql`
-          SELECT MAX(created_at) AS last_poll FROM weather_observations
-        `;
-        const lastPoll = lastPollResult.rows[0]?.last_poll;
-        const hoursSinceLastPoll = lastPoll
-          ? (Date.now() - new Date(lastPoll as string).getTime()) / (1000 * 60 * 60)
-          : Infinity;
-
-        if (hoursSinceLastPoll < 20) {
-          return NextResponse.json({
-            skipped: true,
-            reason: 'No rain forecast; already polled today',
-            hoursSinceLastPoll: Math.round(hoursSinceLastPoll * 10) / 10,
-          });
-        }
-
-        if (!isMidday && hoursSinceLastPoll < 30) {
-          return NextResponse.json({
-            skipped: true,
-            reason: 'No rain forecast; waiting for midday window',
-          });
-        }
+        // No rain expected — skip station polling entirely, forecast is enough
+        return NextResponse.json({
+          skipped: true,
+          reason: 'No rain forecast; station polling not needed',
+        });
       }
     }
 

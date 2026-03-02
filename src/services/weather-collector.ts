@@ -169,13 +169,13 @@ export async function shouldPollFrequently(): Promise<boolean> {
     return true;
   }
 
-  // Only poll frequently for trails that are actively drying (not rideable yet)
+  // Poll frequently for any trail that isn't dry yet
   const dryingTrailsResult = await sql`
     SELECT EXISTS (
       SELECT 1 FROM trails
       WHERE is_archived = false
         AND updates_enabled = true
-        AND condition_status = 'Probably Not Rideable'
+        AND condition_status IN ('Probably Not Rideable', 'Verified Not Rideable')
     ) AS has_drying_trails
   `;
 
