@@ -145,8 +145,9 @@ function randomDelay(minMs, maxMs) {
 // get synthetic "pup-" IDs that change every run.
 
 function textFingerprint(text) {
-  // Normalize: lowercase, collapse whitespace, take first 100 chars
-  return (text || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 100);
+  // Normalize: lowercase, collapse whitespace, take first 80 chars
+  // Using 80 chars to avoid "See more" truncation differences
+  return (text || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
 function loadSeenPosts() {
@@ -464,8 +465,8 @@ async function scrape() {
           const t = (el.textContent || '').trim();
           if (t.length > text.length) text = t;
         }
-        // Same normalization as textFingerprint()
-        const fingerprint = text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 100);
+        // Same normalization as textFingerprint() — 80 chars
+        const fingerprint = text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
 
         if (postId || fingerprint.length > 0) {
           results.push({ postId, fingerprint });
@@ -474,17 +475,43 @@ async function scrape() {
       return results;
     });
 
+    // Check if a fingerprint matches any saved fingerprint
+    // Uses startsWith comparison to handle "See more" truncation differences
+    function isKnownFingerprint(fp) {
+      if (!fp || fp.length === 0) return false;
+      const fpShort = fp.slice(0, 40); // compare first 40 chars for fuzzy tolerance
+      for (const saved of seenData.fingerprints) {
+        if (saved.startsWith(fpShort) || fp.startsWith(saved.slice(0, 40))) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function countKnown(visible) {
+      let count = 0;
+      for (const v of visible) {
+        if ((v.postId && seenData.ids.has(v.postId)) || isKnownFingerprint(v.fingerprint)) {
+          count++;
+        }
+      }
+      return count;
+    }
+
     // Check BEFORE scrolling — if the initial page already has known posts, stop immediately
     if (hasPriorData) {
       await randomDelay(1000, 2000);
       const initialVisible = await getVisiblePostSignatures();
-      let initialKnown = 0;
-      for (const v of initialVisible) {
-        if ((v.postId && seenData.ids.has(v.postId)) ||
-            (v.fingerprint.length > 0 && seenData.fingerprints.has(v.fingerprint))) {
-          initialKnown++;
-        }
+      // Debug: log first few fingerprints so we can diagnose mismatches
+      log(`DEBUG: ${initialVisible.length} posts visible on page`);
+      for (const v of initialVisible.slice(0, 3)) {
+        log(`  visible fp: "${v.fingerprint.slice(0, 50)}..." id=${v.postId || 'none'}`);
       }
+      const savedSample = Array.from(seenData.fingerprints).slice(0, 3);
+      for (const s of savedSample) {
+        log(`  saved fp:   "${s.slice(0, 50)}..."`);
+      }
+      const initialKnown = countKnown(initialVisible);
       if (initialKnown >= 2) {
         log(`Found ${initialKnown} known posts on initial page load — already caught up.`);
         foundKnown = true;
@@ -504,13 +531,7 @@ async function scrape() {
 
       if (hasPriorData) {
         const visible = await getVisiblePostSignatures();
-        let knownCount = 0;
-        for (const v of visible) {
-          if ((v.postId && seenData.ids.has(v.postId)) ||
-              (v.fingerprint.length > 0 && seenData.fingerprints.has(v.fingerprint))) {
-            knownCount++;
-          }
-        }
+        const knownCount = countKnown(visible);
         if (knownCount >= 2) {
           log(`Found ${knownCount} known posts (by ID or text) — caught up, stopping scroll.`);
           foundKnown = true;
