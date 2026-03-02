@@ -358,22 +358,67 @@ function findCommentNodes(obj, results, seen, depth) {
  * For each post: click the comment count link → sort by Newest → wait → close modal.
  */
 async function loadCommentsForPosts(page, graphqlResponses, maxPosts = 20) {
+  // First, scroll back to top so we can see all articles
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await randomDelay(500, 800);
+
+  // Debug: dump what clickable elements exist in the first article
+  const debugInfo = await page.evaluate(() => {
+    const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+    if (articles.length === 0) return 'No articles found';
+    const first = articles[0];
+    const clickables = first.querySelectorAll('a, span[role="button"], div[role="button"], [role="link"]');
+    return Array.from(clickables).slice(0, 30).map(el => {
+      const text = (el.textContent || '').trim().slice(0, 60);
+      const tag = el.tagName;
+      const role = el.getAttribute('role') || '';
+      const aria = el.getAttribute('aria-label') || '';
+      return `<${tag} role="${role}" aria="${aria}"> ${text}`;
+    });
+  });
+  log(`DEBUG article clickables: ${JSON.stringify(debugInfo, null, 2)}`);
+
   // Find all comment links in the feed articles
   const commentLinks = await page.evaluate(() => {
     const articles = Array.from(document.querySelectorAll('div[role="article"]'));
     const links = [];
     for (const article of articles) {
-      // FB comment links typically contain the text "comment" or "Comment"
-      // They're usually an anchor or span inside the article's footer area
-      const allLinks = article.querySelectorAll('a[role="link"], span[role="button"]');
-      for (const link of allLinks) {
-        const text = (link.textContent || '').trim().toLowerCase();
-        // Match "X comments", "1 comment", "Comment", etc.
-        if (/^\d+\s+comments?$/.test(text) || text === 'comment' || text === 'comments') {
-          const rect = link.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            links.push({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text });
-            break; // one per article
+      // Search broadly for any clickable element mentioning "comment(s)"
+      const candidates = article.querySelectorAll('a, span, div[role="button"], [role="link"]');
+      let found = false;
+      for (const el of candidates) {
+        const text = (el.textContent || '').trim().toLowerCase();
+        // Match "X comments", "1 comment", "View X more comments", etc.
+        if (/\d+\s+comments?/.test(text) || /^comments?$/.test(text)) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0 && rect.y > 0) {
+            links.push({
+              x: rect.x + rect.width / 2,
+              y: rect.y + rect.height / 2,
+              text: text.slice(0, 40),
+              articleIdx: links.length,
+            });
+            found = true;
+            break;
+          }
+        }
+      }
+      // Also try aria-label containing "comment"
+      if (!found) {
+        const ariaEls = article.querySelectorAll('[aria-label*="comment" i], [aria-label*="Comment" i]');
+        for (const el of ariaEls) {
+          const label = el.getAttribute('aria-label') || '';
+          if (/\d+\s+comments?/i.test(label) || /^comments?$/i.test(label)) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0 && rect.y > 0) {
+              links.push({
+                x: rect.x + rect.width / 2,
+                y: rect.y + rect.height / 2,
+                text: label.slice(0, 40),
+                articleIdx: links.length,
+              });
+              break;
+            }
           }
         }
       }
