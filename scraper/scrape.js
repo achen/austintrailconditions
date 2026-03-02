@@ -261,9 +261,28 @@ async function scrape() {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
 
-    // ── Intercept GraphQL responses ────────────────────────────────
+    // ── Intercept GraphQL requests + responses ────────────────────
     const graphqlResponses = [];
     const gqlHits = []; // post-like responses for debugging
+
+    // Log outgoing GraphQL requests (doc_id, friendly name, variables)
+    page.on('request', (req) => {
+      const url = req.url();
+      if (!url.includes('graphql')) return;
+      if (req.method() !== 'POST') return;
+      const body = req.postData() || '';
+      const docId = (body.match(/doc_id=(\d+)/) || [])[1];
+      let varsPreview = '';
+      const m = body.match(/variables=([^&]+)/);
+      if (m) {
+        try { varsPreview = decodeURIComponent(m[1]).slice(0, 300); } catch {}
+      }
+      const friendly = (body.match(/fb_api_req_friendly_name=([^&]+)/) || [])[1];
+      if (docId || friendly) {
+        log(`[GQL REQ] docId=${docId} friendly=${friendly ? decodeURIComponent(friendly) : '-'}`);
+        if (varsPreview) log(`  vars: ${varsPreview}`);
+      }
+    });
 
     function looksLikePostsPayload(text) {
       return (
