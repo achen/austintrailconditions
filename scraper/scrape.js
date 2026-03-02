@@ -2,12 +2,10 @@
 /**
  * Facebook Group Scraper for Austin Trail Conditions.
  *
- * Uses your system Chrome (not Puppeteer's bundled Chromium) with a
- * separate profile directory copied from your real one.
+ * Intercepts Facebook's GraphQL responses to extract post data directly
+ * from the API layer — no DOM parsing or AI needed for extraction.
  *
- * All text extraction is done by AI (gpt-5.2) — no brittle DOM selectors.
- * The scraper just grabs raw HTML of each post article and sends it to
- * OpenAI, which returns structured JSON with post text, comments, and IDs.
+ * Uses your system Chrome with a separate profile directory.
  */
 
 const puppeteer = require('puppeteer-core');
@@ -37,7 +35,6 @@ const API_SECRET = process.env.API_SECRET || '';
 const FB_GROUP = 'https://www.facebook.com/groups/325119181430845';
 const MAX_SCROLLS = parseInt(process.env.MAX_SCROLLS || '5', 10);
 const HEADLESS = process.env.HEADLESS !== 'false';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 // Email config
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
@@ -49,7 +46,6 @@ const SOURCE_PROFILE = process.env.CHROME_PROFILE || path.join(os.homedir(), '.c
 const SCRAPER_PROFILE = path.join(__dirname, '.chrome-profile');
 
 if (!API_SECRET) { console.error('Missing API_SECRET in .env'); process.exit(1); }
-if (!OPENAI_API_KEY) { console.error('Missing OPENAI_API_KEY in .env'); process.exit(1); }
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -101,7 +97,7 @@ function syncProfile() {
   }
 }
 
-// ── Seen posts (uses AI-extracted post text for fingerprinting) ──────
+// ── Seen posts ───────────────────────────────────────────────────────
 
 function loadSeenPosts() {
   try {
@@ -163,67 +159,80 @@ async function fetchTrailStatuses() {
   } catch { return {}; }
 }
 
-// ── AI extraction ────────────────────────────────────────────────────
+// ── GraphQL response parser ──────────────────────────────────────────
 
-const EXTRACTION_PROMPT = `You are parsing the HTML of a single Facebook group post. The HTML is the innerHTML of a top-level div[role="article"].
+/**
+ * Recursively search a nested object for nodes that look like Facebook posts.
+ * Facebook's GraphQL responses are deeply nested and vary, so we search
+ * for objects that have story/message/text fields.
+ */
+function findPostNodes(obj, results = [], depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 20) return results;
 
-STRUCTURE:
-- The MAIN POST text and author are at the top level of this article
-- COMMENTS are inside NESTED div[role="article"] elements within this article
-- The main post text is NOT inside any nested div[role="article"]
-
-EXTRACT:
-1. postId: Look for permalink URLs like /permalink/123456, /posts/123456, or story_fbid=123456. Extract the numeric ID.
-2. postText: The main post content written by the original poster. This is NOT a comment. Look for div[dir="auto"] elements that are NOT inside nested div[role="article"] elements.
-3. authorName: The name of the person who wrote the main post (usually in a strong or heading element near the top).
-4. comments: Array of comments. Each comment is inside a nested div[role="article"]. Extract commentId (from comment_id= in URLs), authorName, and commentText.
-
-IMPORTANT:
-- Do NOT confuse comments with the main post. If you only find text inside nested articles, those are comments, not the post.
-- Ignore UI text: "Like", "Reply", "Share", "Write a comment", reaction counts, timestamps, "See more", "Most relevant", etc.
-- If the main post has no visible text (e.g. it's just a photo), set postText to null.
-
-Return JSON:
-{
-  "postId": "numeric_id_or_null",
-  "postText": "the main post text or null",
-  "authorName": "Author Name",
-  "comments": [
-    {"commentId": "id_or_null", "authorName": "Name", "commentText": "text"}
-  ]
-}`;
-
-async function extractPostFromHtml(html) {
-  try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-5.2',
-        messages: [
-          { role: 'system', content: EXTRACTION_PROMPT },
-          { role: 'user', content: html.slice(0, 100000) },
-        ],
-        temperature: 0,
-        max_completion_tokens: 2000,
-        response_format: { type: 'json_object' },
-      }),
-    });
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => '');
-      log(`  OpenAI error ${res.status}: ${errBody.slice(0, 200)}`);
-      return null;
-    }
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content || '';
-    return JSON.parse(content);
-  } catch (e) {
-    log(`  AI extraction failed: ${e.message}`);
-    return null;
+  // A "story" node typically has: id, message, created_time, actors
+  if (obj.message && obj.message.text && typeof obj.message.text === 'string') {
+    // This looks like a post or comment with text
+    results.push(obj);
   }
+
+  // Recurse into arrays and objects
+  if (Array.isArray(obj)) {
+    for (const item of obj) findPostNodes(item, results, depth + 1);
+  } else {
+    for (const key of Object.keys(obj)) {
+      findPostNodes(obj[key], results, depth + 1);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Extract post data from a GraphQL response body.
+ * Returns array of { postId, authorName, postText, comments[] }
+ */
+function extractPostsFromGraphQL(data) {
+  const nodes = findPostNodes(data);
+  const posts = [];
+  const seen = new Set();
+
+  for (const node of nodes) {
+    const text = node.message?.text;
+    if (!text || text.length < 5) continue;
+
+    // Try to get post ID
+    const postId = node.post_id || node.id || node.legacy_token || null;
+    if (postId && seen.has(postId)) continue;
+    if (postId) seen.add(postId);
+
+    // Try to get author
+    const actors = node.actors || node.author || [];
+    let authorName = 'Unknown';
+    if (Array.isArray(actors) && actors.length > 0) {
+      authorName = actors[0].name || actors[0].__typename || 'Unknown';
+    } else if (actors && actors.name) {
+      authorName = actors.name;
+    }
+
+    // Try to get comments
+    const comments = [];
+    const feedbackNode = node.feedback || node.story_ufi_container || null;
+    if (feedbackNode) {
+      const commentNodes = findPostNodes(feedbackNode);
+      for (const cn of commentNodes) {
+        if (cn === node) continue; // skip self
+        const cText = cn.message?.text || cn.body?.text;
+        if (!cText) continue;
+        const cAuthor = cn.author?.name || (cn.actors?.[0]?.name) || 'Unknown';
+        const cId = cn.id || cn.legacy_token || null;
+        comments.push({ commentId: cId, authorName: cAuthor, commentText: cText });
+      }
+    }
+
+    posts.push({ postId, authorName, postText: text, comments });
+  }
+
+  return posts;
 }
 
 // ── Main scrape function ─────────────────────────────────────────────
@@ -252,8 +261,28 @@ async function scrape() {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
 
+    // ── Intercept GraphQL responses ────────────────────────────────
+    const graphqlResponses = [];
+
+    page.on('response', async (response) => {
+      const url = response.url();
+      if (!url.includes('graphql')) return;
+      try {
+        const text = await response.text();
+        // Facebook sometimes returns multiple JSON objects separated by newlines
+        for (const line of text.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const json = JSON.parse(line);
+            graphqlResponses.push(json);
+          } catch {}
+        }
+      } catch {}
+    });
+
     log('Navigating to group...');
     await page.goto(FB_GROUP, { waitUntil: 'networkidle2', timeout: 60000 });
+    log(`Page loaded. ${graphqlResponses.length} GraphQL responses captured.`);
     await randomDelay(3000, 5000);
 
     if (page.url().includes('/login')) {
@@ -262,64 +291,48 @@ async function scrape() {
       process.exit(2);
     }
 
-    // Debug mode: dump first article HTML and exit (before sort)
+    // ── DEBUG_FIRST: dump raw GraphQL data and exit ────────────────
     if (process.env.DEBUG_FIRST === 'true') {
-      log('DEBUG_FIRST mode — dumping what we see right now...');
-      await randomDelay(3000, 5000); // just give FB a few seconds
+      log(`DEBUG_FIRST — captured ${graphqlResponses.length} GraphQL responses`);
 
-      // Raw dump: how many articles, what do they look like?
-      const debugInfo = await page.evaluate(() => {
-        const allArticles = document.querySelectorAll('div[role="article"]');
-        const results = [];
-        for (const article of allArticles) {
-          const parent = article.parentElement;
-          const isNested = parent ? !!parent.closest('div[role="article"]') : false;
-          const dirAutoEls = article.querySelectorAll('div[dir="auto"]');
-          const hasLoading = !!article.querySelector('[aria-label="Loading..."]');
-          const text = (article.innerText || '').trim();
-          const textContent = (article.textContent || '').trim();
-          results.push({
-            isNested,
-            dirAutoCount: dirAutoEls.length,
-            hasLoading,
-            innerTextLen: text.length,
-            textContentLen: textContent.length,
-            htmlLen: article.innerHTML.length,
-            first100text: text.slice(0, 100),
-            first100textContent: textContent.slice(0, 100),
-          });
+      // Try to extract posts from all captured responses
+      let allPosts = [];
+      for (let i = 0; i < graphqlResponses.length; i++) {
+        const posts = extractPostsFromGraphQL(graphqlResponses[i]);
+        if (posts.length > 0) {
+          log(`  Response #${i}: found ${posts.length} post(s)`);
+          allPosts.push(...posts);
         }
-        return results;
-      });
-
-      log(`Found ${debugInfo.length} article elements:`);
-      for (let i = 0; i < debugInfo.length; i++) {
-        const a = debugInfo[i];
-        log(`  #${i}: nested=${a.isNested} dirAuto=${a.dirAutoCount} loading=${a.hasLoading} innerText=${a.innerTextLen} textContent=${a.textContentLen} html=${a.htmlLen}`);
-        log(`    innerText: "${a.first100text}"`);
-        log(`    textContent: "${a.first100textContent}"`);
       }
 
-      // Print first non-nested article HTML regardless
-      const firstHtml = await page.evaluate(() => {
-        for (const article of document.querySelectorAll('div[role="article"]')) {
-          const parent = article.parentElement;
-          const isNested = parent ? !!parent.closest('div[role="article"]') : false;
-          if (!isNested) return article.outerHTML;
+      log(`\nExtracted ${allPosts.length} total posts from GraphQL:`);
+      for (const p of allPosts) {
+        log(`  📝 [${p.postId}] ${p.authorName}: ${(p.postText || '').slice(0, 150)}`);
+        for (const c of p.comments) {
+          log(`     💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
         }
-        return null;
-      });
-      if (firstHtml) {
-        log(`First article HTML length: ${firstHtml.length}`);
-        console.log(firstHtml);
-      } else {
-        log('No articles found at all!');
       }
+
+      // Also dump the first response that has any "message" or "text" fields for inspection
+      if (allPosts.length === 0) {
+        log('\nNo posts found. Dumping first 3 GraphQL response summaries...');
+        for (let i = 0; i < Math.min(3, graphqlResponses.length); i++) {
+          const json = JSON.stringify(graphqlResponses[i]).slice(0, 2000);
+          log(`  Response #${i} (${JSON.stringify(graphqlResponses[i]).length} chars): ${json}`);
+        }
+        // Also dump full first response to file for inspection
+        if (graphqlResponses.length > 0) {
+          const dumpFile = path.join(__dirname, 'graphql-debug.json');
+          fs.writeFileSync(dumpFile, JSON.stringify(graphqlResponses, null, 2));
+          log(`Full GraphQL data dumped to ${dumpFile}`);
+        }
+      }
+
       await browser.close();
       process.exit(0);
     }
 
-    // Sort by "Recent activity"
+    // ── Sort by "Recent activity" ──────────────────────────────────
     log('Switching to Recent activity sort...');
     try {
       const sortClicked = await page.evaluate(() => {
@@ -346,157 +359,102 @@ async function scrape() {
       }
     } catch (e) { log('Sort failed (non-fatal): ' + e.message); }
 
-    // Wait for feed
-    try { await page.waitForSelector('div[role="feed"]', { timeout: 15000 }); }
-    catch { try { await page.waitForSelector('div[role="article"]', { timeout: 10000 }); } catch {} }
+    // Wait a bit for the re-sorted feed to load via GraphQL
+    const preScrollCount = graphqlResponses.length;
+    await randomDelay(3000, 5000);
+    log(`After sort: ${graphqlResponses.length} GraphQL responses (${graphqlResponses.length - preScrollCount} new).`);
 
-    // Wait for at least one real post (not a loading skeleton)
-    log('Waiting for posts to load...');
-    await page.waitForFunction(() => {
-      for (const article of document.querySelectorAll('div[role="article"]')) {
-        if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-        if (article.querySelector('div[dir="auto"]') && article.innerText.trim().length > 50) return true;
-      }
-      return false;
-    }, { timeout: 20000 }).catch(() => log('No real articles found after 20s, continuing anyway.'));
-    await randomDelay(1000, 2000);
-
-    // Switch comment sort to "Newest"
-    async function sortCommentsNewest() {
-      const switched = await page.evaluate(async () => {
-        let count = 0;
-        for (const btn of document.querySelectorAll('div[role="button"], span[role="button"]')) {
-          const text = (btn.textContent || '').trim().toLowerCase();
-          if (text === 'most relevant' || text === 'all comments') {
-            btn.click(); count++;
-            await new Promise(r => setTimeout(r, 800));
-            for (const item of document.querySelectorAll('div[role="menuitem"], div[role="option"], span')) {
-              if ((item.textContent || '').trim().toLowerCase().startsWith('newest')) {
-                item.click(); await new Promise(r => setTimeout(r, 500)); break;
-              }
-            }
-          }
-        }
-        return count;
-      });
-      if (switched > 0) log(`Switched ${switched} comment section(s) to Newest.`);
-    }
-
+    // ── Extract posts from all GraphQL data so far ─────────────────
     const seenData = loadSeenPosts();
     log(`Loaded ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
     const hasPriorData = seenData.ids.size > 0 || seenData.fingerprints.size > 0;
 
-    // ── Scroll + extract loop ──────────────────────────────────────
-    const allExtracted = [];     // final extracted posts+comments for API
-    const processedHtmlHashes = new Set(); // avoid re-processing same article
-    let scrollCount = 0;
+    const allExtracted = [];
+    const processedPostIds = new Set();
     let consecutiveKnown = 0;
     let foundKnown = false;
+    let scrollCount = 0;
 
-    for (let round = 0; round <= MAX_SCROLLS; round++) {
-      await sortCommentsNewest();
-      await randomDelay(500, 1000);
+    function processGraphQLData() {
+      for (const response of graphqlResponses) {
+        const posts = extractPostsFromGraphQL(response);
+        for (const post of posts) {
+          const postId = post.postId || ('gql-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+          if (processedPostIds.has(postId)) continue;
+          processedPostIds.add(postId);
 
-      // Click all "See more" links to expand truncated posts
-      await page.evaluate(async () => {
-        const links = document.querySelectorAll('div[role="button"], span[role="button"]');
-        for (const link of links) {
-          if ((link.textContent || '').trim().toLowerCase() === 'see more') {
-            link.click();
-            await new Promise(r => setTimeout(r, 300));
+          const fp = makeFingerprint(post.postText);
+          // Also check fingerprint dedup
+          if (fp && processedPostIds.has('fp:' + fp)) continue;
+          if (fp) processedPostIds.add('fp:' + fp);
+
+          const known = hasPriorData && isKnownPost(seenData, postId, fp);
+          const commentCount = (post.comments || []).length;
+
+          log(`  ${known ? 'KNOWN' : 'NEW  '} [${postId}] ${post.authorName}: ${post.postText.slice(0, 120)}`);
+          log(`         ${commentCount} comment(s)`);
+          for (const c of post.comments) {
+            log(`         💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
           }
-        }
-      });
-      await randomDelay(500, 1000);
 
-      // Grab raw HTML of each top-level article (skip loading skeletons)
-      const articleHtmls = await page.evaluate(() => {
-        const results = [];
-        for (const article of document.querySelectorAll('div[role="article"]')) {
-          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-          if (!article.querySelector('div[dir="auto"]')) continue;
-          results.push(article.innerHTML);
-        }
-        return results;
-      });
+          seenData.ids.add(postId);
+          if (fp) seenData.fingerprints.add(fp);
 
-      log(`Round ${round}: ${articleHtmls.length} articles on page`);
-
-      for (const html of articleHtmls) {
-        // Dedup: use a chunk from the middle of the HTML (avoids header/footer sameness)
-        const mid = Math.floor(html.length / 2);
-        const hash = html.slice(mid, mid + 500);
-        if (processedHtmlHashes.has(hash)) continue;
-        processedHtmlHashes.add(hash);
-
-        // Send to AI — raw HTML, no processing
-        const result = await extractPostFromHtml(html);
-
-        if (!result || !result.postText) {
-          log(`  ⬚ (${Math.round(html.length / 1024)}KB) — no post text extracted`);
-          continue;
-        }
-
-        const postId = result.postId || ('pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
-        const fp = makeFingerprint(result.postText);
-        const known = hasPriorData && isKnownPost(seenData, postId, fp);
-        const commentCount = (result.comments || []).length;
-
-        log(`  ${known ? 'KNOWN' : 'NEW  '} [${postId}] ${result.authorName}: ${result.postText.slice(0, 120)}`);
-        log(`         ${commentCount} comment(s)`);
-        for (const c of (result.comments || [])) {
-          log(`         💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
-        }
-
-        // Save to seen data
-        seenData.ids.add(postId);
-        if (fp) seenData.fingerprints.add(fp);
-
-        // Build posts for API
-        allExtracted.push({
-          postId,
-          authorName: result.authorName || 'Unknown',
-          postText: result.postText.slice(0, 2000),
-          timestamp: new Date().toISOString(),
-        });
-        for (let i = 0; i < (result.comments || []).length; i++) {
-          const c = result.comments[i];
-          if (!c.commentText) continue;
           allExtracted.push({
-            postId: c.commentId || `${postId}-c${i}`,
-            authorName: c.authorName || 'Unknown',
-            postText: c.commentText.slice(0, 2000),
+            postId,
+            authorName: post.authorName || 'Unknown',
+            postText: post.postText.slice(0, 2000),
             timestamp: new Date().toISOString(),
           });
-        }
-
-        if (known) {
-          consecutiveKnown++;
-          if (consecutiveKnown >= 2) {
-            log(`Hit ${consecutiveKnown} consecutive known posts — stopping.`);
-            foundKnown = true;
-            break;
+          for (let i = 0; i < (post.comments || []).length; i++) {
+            const c = post.comments[i];
+            if (!c.commentText) continue;
+            allExtracted.push({
+              postId: c.commentId || `${postId}-c${i}`,
+              authorName: c.authorName || 'Unknown',
+              postText: c.commentText.slice(0, 2000),
+              timestamp: new Date().toISOString(),
+            });
           }
-        } else {
-          consecutiveKnown = 0;
+
+          if (known) {
+            consecutiveKnown++;
+            if (consecutiveKnown >= 2) {
+              log(`Hit ${consecutiveKnown} consecutive known posts — stopping.`);
+              foundKnown = true;
+              return;
+            }
+          } else {
+            consecutiveKnown = 0;
+          }
         }
       }
+    }
 
-      if (foundKnown || round >= MAX_SCROLLS) break;
+    // Process initial page load data
+    log('Processing initial GraphQL data...');
+    processGraphQLData();
 
+    // ── Scroll loop to load more posts ─────────────────────────────
+    for (let round = 0; round < MAX_SCROLLS && !foundKnown; round++) {
+      const beforeCount = graphqlResponses.length;
       await page.evaluate((amt) => window.scrollBy(0, amt), 300 + Math.floor(Math.random() * 400));
       scrollCount++;
       log(`Scroll ${scrollCount}/${MAX_SCROLLS}...`);
       await randomDelay(2000, 4000);
-      // Wait for new posts to finish loading
-      await page.waitForFunction((prevCount) => {
-        let count = 0;
-        for (const article of document.querySelectorAll('div[role="article"]')) {
-          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-          if (article.querySelector('div[dir="auto"]')) count++;
-        }
-        return count > prevCount;
-      }, { timeout: 10000 }, processedHtmlHashes.size).catch(() => {});
+
+      // Wait for new GraphQL responses
+      await new Promise((resolve) => {
+        const check = () => {
+          if (graphqlResponses.length > beforeCount) return resolve();
+          setTimeout(check, 500);
+        };
+        setTimeout(check, 500);
+        setTimeout(resolve, 10000); // timeout after 10s
+      });
+
+      log(`  ${graphqlResponses.length - beforeCount} new GraphQL responses.`);
+      processGraphQLData();
     }
 
     if (!foundKnown && hasPriorData) {
@@ -517,7 +475,7 @@ async function scrape() {
       process.exit(0);
     }
 
-    // Send to ingest API
+    // ── Send to ingest API ─────────────────────────────────────────
     const beforeStatuses = await fetchTrailStatuses();
 
     log(`Sending ${allExtracted.length} items to ${API_URL}/api/scrape/ingest`);
