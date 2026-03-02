@@ -336,25 +336,30 @@ async function scrape() {
         return results;
       });
 
+      log(`Round ${round}: ${articleHtmls.length} articles on page`);
+
       for (const html of articleHtmls) {
-        // Simple hash to avoid re-processing the same article across scroll rounds
-        const hash = html.slice(0, 200);
+        // Dedup: use a chunk from the middle of the HTML (avoids header/footer sameness)
+        const mid = Math.floor(html.length / 2);
+        const hash = html.slice(mid, mid + 500);
         if (processedHtmlHashes.has(hash)) continue;
         processedHtmlHashes.add(hash);
 
-        // Send to AI
-        log(`Extracting article (${Math.round(html.length / 1024)}KB)...`);
+        // Send to AI — raw HTML, no processing
         const result = await extractPostFromHtml(html);
+
         if (!result || !result.postText) {
-          log('  ❌ AI returned no text, skipping.');
+          log(`  ⬚ (${Math.round(html.length / 1024)}KB) — no post text extracted`);
           continue;
         }
 
         const postId = result.postId || ('pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
         const fp = makeFingerprint(result.postText);
         const known = hasPriorData && isKnownPost(seenData, postId, fp);
+        const commentCount = (result.comments || []).length;
 
-        log(`  ${known ? 'KNOWN' : 'NEW  '} 📝 ${result.authorName}: ${result.postText.slice(0, 100)}`);
+        log(`  ${known ? 'KNOWN' : 'NEW  '} [${postId}] ${result.authorName}: ${result.postText.slice(0, 120)}`);
+        log(`         ${commentCount} comment(s)`);
         for (const c of (result.comments || [])) {
           log(`         💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
         }
