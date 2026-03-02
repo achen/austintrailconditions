@@ -358,77 +358,19 @@ function findCommentNodes(obj, results, seen, depth) {
  * For each post: click the comment count link → sort by Newest → wait → close modal.
  */
 async function loadCommentsForPosts(page, graphqlResponses, maxPosts = 20) {
-  // First, scroll back to top so we can see all articles
+  // Scroll back to top
   await page.evaluate(() => window.scrollTo(0, 0));
-  await randomDelay(500, 800);
+  await randomDelay(800, 1200);
 
-  // Debug: find "X comments" spans on the page
-  const debugInfo = await page.evaluate(() => {
-    const spans = document.querySelectorAll('span');
-    const matches = [];
-    for (const el of spans) {
-      // Check only direct text (not nested children text)
-      const directText = Array.from(el.childNodes)
-        .filter(n => n.nodeType === 3)
-        .map(n => n.textContent.trim())
-        .join('');
-      const fullText = (el.textContent || '').trim();
-      if (/^\d+\s+comments?$/i.test(fullText) && fullText.length < 20) {
-        const rect = el.getBoundingClientRect();
-        // Find the closest clickable ancestor
-        const btn = el.closest('div[role="button"]');
-        const btnRect = btn ? btn.getBoundingClientRect() : null;
-        matches.push({ text: fullText, y: Math.round(rect.y), visible: rect.width > 0, hasBtn: !!btn, btnY: btnRect ? Math.round(btnRect.y) : null });
-      }
-    }
-    return matches;
-  });
-  log(`DEBUG "X comments" spans: ${JSON.stringify(debugInfo)}`);
+  const clickedYPositions = []; // track absolute Y positions we've already clicked
+  let totalClicked = 0;
+  let scrollPos = 0;
+  const maxScrollAttempts = 30; // safety limit
 
-  // Find all "X comments" spans and their clickable parent buttons
-  const commentLinks = await page.evaluate(() => {
-    const spans = Array.from(document.querySelectorAll('span'));
-    const links = [];
-    const seenY = new Set(); // dedup by approximate Y position
-    for (const span of spans) {
-      const text = (span.textContent || '').trim();
-      if (!/^\d+\s+comments?$/i.test(text) || text.length > 20) continue;
-      // Find the clickable ancestor (div[role="button"])
-      const btn = span.closest('div[role="button"]');
-      const target = btn || span;
-      const rect = target.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) continue;
-      // Dedup: skip if we already have a link within 50px of this Y
-      const yKey = Math.round(rect.y / 50);
-      if (seenY.has(yKey)) continue;
-      seenY.add(yKey);
-      links.push({
-        x: rect.x + rect.width / 2,
-        y: rect.y + rect.height / 2,
-        text,
-      });
-    }
-    return links;
-  });
-
-  log(`Found ${commentLinks.length} comment links to click`);
-  const limit = Math.min(commentLinks.length, maxPosts);
-
-  for (let i = 0; i < limit; i++) {
-    const link = commentLinks[i];
-    const beforeCount = graphqlResponses.length;
-
-    log(`  Opening comments ${i + 1}/${limit} ("${link.text}")...`);
-
-    // Scroll the link into view first, then re-get its position and click
-    await page.evaluate((y) => window.scrollTo(0, y - 300), link.y);
-    await randomDelay(300, 500);
-
-    // Re-find the link position after scroll
-    const freshPos = await page.evaluate((idx) => {
+  for (let attempt = 0; attempt < maxScrollAttempts && totalClicked < maxPosts; attempt++) {
+    // Find "X comments" buttons currently visible in the viewport
+    const found = await page.evaluate((clickedYs) => {
       const spans = Array.from(document.querySelectorAll('span'));
-      const seenY = new Set();
-      let count = 0;
       for (const span of spans) {
         const text = (span.textContent || '').trim();
         if (!/^\d+\s+comments?$/i.test(text) || text.length > 20) continue;
@@ -436,85 +378,106 @@ async function loadCommentsForPosts(page, graphqlResponses, maxPosts = 20) {
         const target = btn || span;
         const rect = target.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) continue;
-        const yKey = Math.round(rect.y / 50);
-        if (seenY.has(yKey)) continue;
-        seenY.add(yKey);
-        if (count === idx) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-        count++;
+        // Only consider elements in the viewport
+        if (rect.y < -50 || rect.y > window.innerHeight + 50) continue;
+        // Check if we already clicked near this absolute Y position
+        const absY = rect.y + window.scrollY;
+        const alreadyClicked = clickedYs.some(y => Math.abs(y - absY) < 100);
+        if (alreadyClicked) continue;
+        return {
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2,
+          absY,
+          text,
+        };
       }
       return null;
-    }, i);
+    }, clickedYPositions);
 
-    if (!freshPos) { log(`    Could not find comment link ${i}, skipping`); continue; }
+    if (found) {
+      const beforeCount = graphqlResponses.length;
+      totalClicked++;
+      log(`  Opening comments ${totalClicked} ("${found.text}")...`);
 
-    await page.mouse.click(freshPos.x, freshPos.y);
-    await randomDelay(1500, 2500);
+      await page.mouse.click(found.x, found.y);
+      clickedYPositions.push(found.absY);
+      await randomDelay(1500, 2500);
 
-    // Wait for comment GraphQL responses to arrive
-    await new Promise((resolve) => {
-      const check = () => {
-        if (graphqlResponses.length > beforeCount) return resolve();
+      // Wait for comment GraphQL responses
+      await new Promise((resolve) => {
+        const check = () => {
+          if (graphqlResponses.length > beforeCount) return resolve();
+          setTimeout(check, 300);
+        };
         setTimeout(check, 300);
-      };
-      setTimeout(check, 300);
-      setTimeout(resolve, 5000);
-    });
-
-    // Try to sort comments by "Newest" — look for the sort dropdown
-    try {
-      const sorted = await page.evaluate(() => {
-        // Look for "Most relevant" or sort button in the modal/expanded comments
-        const buttons = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'));
-        for (const btn of buttons) {
-          const text = (btn.textContent || '').trim().toLowerCase();
-          if (text.includes('most relevant') || text.includes('all comments')) {
-            btn.click();
-            return 'clicked-sort';
-          }
-        }
-        return 'no-sort-found';
+        setTimeout(resolve, 5000);
       });
 
-      if (sorted === 'clicked-sort') {
-        await randomDelay(500, 800);
-        // Now click "Newest" in the dropdown
-        await page.evaluate(() => {
-          const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], span'));
-          for (const item of items) {
-            const text = (item.textContent || '').trim().toLowerCase();
-            if (text === 'newest' || text === 'new') {
-              item.click();
-              return;
+      // Try to sort by Newest
+      try {
+        const sorted = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'));
+          for (const btn of buttons) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text.includes('most relevant') || text.includes('all comments')) {
+              btn.click();
+              return 'clicked-sort';
             }
           }
+          return 'no-sort-found';
         });
-        await randomDelay(1000, 1500);
 
-        // Wait for sorted comments to load
-        const afterSort = graphqlResponses.length;
-        await new Promise((resolve) => {
-          const check = () => {
-            if (graphqlResponses.length > afterSort) return resolve();
+        if (sorted === 'clicked-sort') {
+          await randomDelay(500, 800);
+          await page.evaluate(() => {
+            const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], span'));
+            for (const item of items) {
+              const text = (item.textContent || '').trim().toLowerCase();
+              if (text === 'newest' || text === 'new') {
+                item.click();
+                return;
+              }
+            }
+          });
+          await randomDelay(1000, 1500);
+          // Wait for sorted comments
+          const afterSort = graphqlResponses.length;
+          await new Promise((resolve) => {
+            const check = () => {
+              if (graphqlResponses.length > afterSort) return resolve();
+              setTimeout(check, 300);
+            };
             setTimeout(check, 300);
-          };
-          setTimeout(check, 300);
-          setTimeout(resolve, 3000);
-        });
+            setTimeout(resolve, 3000);
+          });
+        }
+      } catch (e) { /* sort is best-effort */ }
+
+      // Close modal
+      await page.keyboard.press('Escape');
+      await randomDelay(500, 800);
+      await page.keyboard.press('Escape');
+      await randomDelay(300, 500);
+
+      log(`    +${graphqlResponses.length - beforeCount} GraphQL responses`);
+    } else {
+      // No comment link found in viewport — scroll down
+      scrollPos += 600;
+      await page.evaluate((pos) => window.scrollTo(0, pos), scrollPos);
+      await randomDelay(800, 1200);
+
+      // Check if we've reached the bottom
+      const atBottom = await page.evaluate(() =>
+        window.scrollY + window.innerHeight >= document.body.scrollHeight - 200
+      );
+      if (atBottom) {
+        log(`  Reached bottom of feed after ${totalClicked} comment clicks`);
+        break;
       }
-    } catch (e) {
-      // Sort is best-effort
     }
-
-    // Close the modal/expanded view — press Escape
-    await page.keyboard.press('Escape');
-    await randomDelay(500, 1000);
-
-    // If modal is still open (sometimes needs a second Escape)
-    await page.keyboard.press('Escape');
-    await randomDelay(300, 500);
-
-    log(`    +${graphqlResponses.length - beforeCount} GraphQL responses`);
   }
+
+  log(`Clicked ${totalClicked} comment links total`);
 }
 
 async function scrape() {
