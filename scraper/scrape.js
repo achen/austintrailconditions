@@ -54,6 +54,25 @@ function randomDelay(minMs, maxMs) {
   return new Promise(resolve => setTimeout(resolve, minMs + Math.random() * (maxMs - minMs)));
 }
 
+/**
+ * Convert a relative timestamp like "1w", "2d", "3h", "45m" to an ISO date string.
+ * Falls back to current time if unparseable.
+ */
+function relativeTimestampToISO(rel) {
+  if (!rel) return new Date().toISOString();
+  // Already an ISO string?
+  if (rel.includes('T') || rel.includes('-')) {
+    const d = new Date(rel);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+  const match = rel.match(/^(\d+)\s*([smhdwy])$/i);
+  if (!match) return new Date().toISOString();
+  const num = parseInt(match[1], 10);
+  const unit = match[2].toLowerCase();
+  const ms = { s: 1000, m: 60000, h: 3600000, d: 86400000, w: 604800000, y: 31536000000 };
+  return new Date(Date.now() - num * (ms[unit] || 0)).toISOString();
+}
+
 // ── Find system Chrome ───────────────────────────────────────────────
 
 function findChrome() {
@@ -671,8 +690,9 @@ async function scrape() {
           allExtracted.push({
             postId,
             authorName: post.authorName || 'Unknown',
-            postText: post.postText.slice(0, 2000),
+            postText: post.postText,
             timestamp: post.timestamp || new Date().toISOString(),
+            isComment: false,
           });
         }
       }
@@ -721,21 +741,24 @@ async function scrape() {
     const commentsByPost = await loadCommentsViaPermalinks(page, postsForComments);
 
     // Add comments to allExtracted
+    let commentCount = 0;
     for (const [postId, comments] of commentsByPost) {
       for (let i = 0; i < comments.length; i++) {
         const c = comments[i];
         if (!c.commentText) continue;
         allExtracted.push({
           postId: c.commentId || `${postId}-c${i}`,
+          parentPostId: postId,
           authorName: c.authorName || 'Unknown',
-          postText: c.commentText.slice(0, 2000),
-          timestamp: new Date().toISOString(),
+          postText: c.commentText,
+          timestamp: relativeTimestampToISO(c.timestamp),
+          isComment: true,
         });
+        commentCount++;
       }
     }
 
-    const postCount = allExtracted.filter(p => !p.postId.includes('-c')).length;
-    const commentCount = allExtracted.length - postCount;
+    const postCount = allExtracted.length - commentCount;
     log(`Total: ${postCount} posts + ${commentCount} comments`);
 
     if (allExtracted.length === 0) {
