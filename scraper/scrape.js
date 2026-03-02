@@ -3,19 +3,11 @@
  * Facebook Group Scraper for Austin Trail Conditions.
  *
  * Uses your system Chrome (not Puppeteer's bundled Chromium) with a
- * separate profile directory copied from your real one. This means:
- *   - No cookie export needed — it copies your logged-in session
- *   - Chrome can stay open while this runs (separate profile dir)
- *   - Uses your real Chrome binary so profile format matches
+ * separate profile directory copied from your real one.
  *
- * Setup:
- *   1. cd scraper && npm install
- *   2. cp .env.example .env — fill in API_URL and API_SECRET
- *   3. Log into Facebook in Chrome on this machine
- *   4. node scrape.js  (first run copies your Chrome profile)
- *
- * Crontab example (every 2h from 6am–8pm CT):
- *   0 6,8,10,12,14,16,18,20 * * * cd /path/to/scraper && node scrape.js >> scrape.log 2>&1
+ * All text extraction is done by AI (gpt-5.2) — no brittle DOM selectors.
+ * The scraper just grabs raw HTML of each post article and sends it to
+ * OpenAI, which returns structured JSON with post text, comments, and IDs.
  */
 
 const puppeteer = require('puppeteer-core');
@@ -43,109 +35,73 @@ if (fs.existsSync(envPath)) {
 const API_URL = (process.env.API_URL || 'https://austintrailconditions.com').replace(/\/$/, '');
 const API_SECRET = process.env.API_SECRET || '';
 const FB_GROUP = 'https://www.facebook.com/groups/325119181430845';
-const MAX_SCROLLS = parseInt(process.env.MAX_SCROLLS || '5', 10); // safety cap
-const HEADLESS = process.env.HEADLESS !== 'false'; // default true
+const MAX_SCROLLS = parseInt(process.env.MAX_SCROLLS || '5', 10);
+const HEADLESS = process.env.HEADLESS !== 'false';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
-// Email config (Resend)
+// Email config
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const ALERT_EMAIL = process.env.ALERT_EMAIL || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'info@austintrailconditions.com';
 
-// OpenAI config
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-
-// File to persist known post IDs between runs
 const SEEN_FILE = path.join(__dirname, '.seen-posts.json');
-
-// Source Chrome profile (your real logged-in session)
 const SOURCE_PROFILE = process.env.CHROME_PROFILE || path.join(os.homedir(), '.config', 'google-chrome');
-// Separate profile dir for the scraper (won't conflict with running Chrome)
 const SCRAPER_PROFILE = path.join(__dirname, '.chrome-profile');
 
 if (!API_SECRET) { console.error('Missing API_SECRET in .env'); process.exit(1); }
+if (!OPENAI_API_KEY) { console.error('Missing OPENAI_API_KEY in .env'); process.exit(1); }
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+function log(msg) { console.log(`[${new Date().toISOString()}] ${msg}`); }
+
+function randomDelay(minMs, maxMs) {
+  return new Promise(resolve => setTimeout(resolve, minMs + Math.random() * (maxMs - minMs)));
+}
 
 // ── Find system Chrome ───────────────────────────────────────────────
 
 function findChrome() {
   const candidates = [
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium',
-    '/snap/bin/chromium',
+    '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium',
   ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  // Try which
+  for (const p of candidates) { if (fs.existsSync(p)) return p; }
   try {
     return execSync('which google-chrome || which chromium-browser || which chromium', { encoding: 'utf-8' }).trim();
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-// ── Copy Chrome profile (cookies + session) ──────────────────────────
+// ── Copy Chrome profile ──────────────────────────────────────────────
 
 function syncProfile() {
   if (!fs.existsSync(SOURCE_PROFILE)) {
     log(`ERROR: Chrome profile not found at ${SOURCE_PROFILE}`);
-    log('Log into Facebook in Chrome first, then try again.');
     process.exit(1);
   }
-
-  // Copy just the Default profile (cookies, local storage, etc.)
-  // This is ~50-200MB, not the full multi-GB cache
   const src = path.join(SOURCE_PROFILE, 'Default');
   const dest = path.join(SCRAPER_PROFILE, 'Default');
+  if (!fs.existsSync(src)) { log(`ERROR: No Default profile at ${src}`); process.exit(1); }
 
-  if (!fs.existsSync(src)) {
-    log(`ERROR: No Default profile found at ${src}`);
-    process.exit(1);
-  }
-
-  log('Syncing Chrome profile (cookies & session)...');
-  // Use rsync for speed — only copies changed files
+  log('Syncing Chrome profile...');
   try {
     execSync(`rsync -a --delete \
-      --include="Cookies" \
-      --include="Cookies-journal" \
-      --include="Login Data" \
-      --include="Login Data-journal" \
-      --include="Local Storage/***" \
-      --include="Session Storage/***" \
-      --include="Preferences" \
-      --include="Secure Preferences" \
-      --include="Local Storage/" \
-      --include="Session Storage/" \
-      --exclude="*" \
-      "${src}/" "${dest}/"`, { stdio: 'pipe' });
+      --include="Cookies" --include="Cookies-journal" \
+      --include="Login Data" --include="Login Data-journal" \
+      --include="Local Storage/***" --include="Session Storage/***" \
+      --include="Preferences" --include="Secure Preferences" \
+      --include="Local Storage/" --include="Session Storage/" \
+      --exclude="*" "${src}/" "${dest}/"`, { stdio: 'pipe' });
     log('Profile synced.');
-  } catch (err) {
-    // Fallback: just copy the whole Default folder
-    log('rsync selective copy failed, doing full copy...');
+  } catch {
+    log('rsync failed, fallback copy...');
     execSync(`mkdir -p "${dest}" && cp -r "${src}/Cookies" "${src}/Cookies-journal" "${dest}/" 2>/dev/null || true`);
     execSync(`cp -r "${src}/Local Storage" "${dest}/" 2>/dev/null || true`);
     execSync(`cp -r "${src}/Preferences" "${dest}/" 2>/dev/null || true`);
-    log('Profile copied (fallback).');
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
-
-function log(msg) {
-  console.log(`[${new Date().toISOString()}] ${msg}`);
-}
-
-function randomDelay(minMs, maxMs) {
-  const ms = minMs + Math.random() * (maxMs - minMs);
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// ── Seen posts tracking ──────────────────────────────────────────────
-// We track both permalink-based IDs AND text fingerprints (first 100 chars)
-// because Facebook doesn't always render permalink links, so many posts
-// get synthetic "pup-" IDs that change every run.
+// ── Seen posts (uses AI-extracted post text for fingerprinting) ──────
 
 function loadSeenPosts() {
   try {
@@ -156,48 +112,45 @@ function loadSeenPosts() {
         fingerprints: new Set(data.fingerprints || []),
       };
     }
-  } catch (e) {
-    log('Could not load seen posts file, starting fresh.');
-  }
+  } catch { log('Could not load seen posts, starting fresh.'); }
   return { ids: new Set(), fingerprints: new Set() };
 }
 
 function saveSeenPosts(seenData) {
-  // Keep last 500 of each to avoid unbounded growth
   const ids = Array.from(seenData.ids).slice(-500);
   const fingerprints = Array.from(seenData.fingerprints).slice(-500);
-  fs.writeFileSync(SEEN_FILE, JSON.stringify({
-    postIds: ids,
-    fingerprints,
-    updatedAt: new Date().toISOString(),
-  }));
+  fs.writeFileSync(SEEN_FILE, JSON.stringify({ postIds: ids, fingerprints, updatedAt: new Date().toISOString() }));
 }
 
-// ── Email notification ───────────────────────────────────────────────
+function makeFingerprint(text) {
+  return (text || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+function isKnownPost(seenData, postId, fingerprint) {
+  if (seenData.ids.has(postId)) return true;
+  if (!fingerprint || fingerprint.length === 0) return false;
+  const fpShort = fingerprint.slice(0, 40);
+  for (const saved of seenData.fingerprints) {
+    if (saved.startsWith(fpShort) || fingerprint.startsWith(saved.slice(0, 40))) return true;
+  }
+  return false;
+}
+
+// ── Email ────────────────────────────────────────────────────────────
 
 async function sendEmail(subject, html) {
   if (!RESEND_API_KEY || !ALERT_EMAIL) return;
   try {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: FROM_EMAIL,
-        to: ALERT_EMAIL,
-        subject: `[Trail Scraper] ${subject}`,
-        html,
-      }),
+      headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: FROM_EMAIL, to: ALERT_EMAIL, subject: `[Trail Scraper] ${subject}`, html }),
     });
     if (!res.ok) log(`Email send failed: ${res.status}`);
-  } catch (e) {
-    log(`Email error: ${e.message}`);
-  }
+  } catch (e) { log(`Email error: ${e.message}`); }
 }
 
-// ── Fetch trail statuses from API ────────────────────────────────────
+// ── Fetch trail statuses ─────────────────────────────────────────────
 
 async function fetchTrailStatuses() {
   try {
@@ -207,34 +160,36 @@ async function fetchTrailStatuses() {
     const map = {};
     for (const t of trails) map[t.name] = t.conditionStatus;
     return map;
-  } catch {
-    return {};
-  }
+  } catch { return {}; }
 }
 
-// ── AI text extraction from HTML ─────────────────────────────────────
+// ── AI extraction ────────────────────────────────────────────────────
 
-const EXTRACTION_PROMPT = `You are an HTML parser for Facebook group posts. Given the HTML of a Facebook post article, extract:
+const EXTRACTION_PROMPT = `You are an HTML parser for Facebook group posts. Given the raw HTML of a single Facebook post (a div[role="article"]), extract:
 
 1. The main post text (what the author wrote)
-2. The author name if visible
-3. Any comments and their authors
+2. The post author's name
+3. Any unique post ID you can find (look for permalink URLs containing numeric IDs, e.g. /permalink/123456 or /posts/123456 or story_fbid=123456)
+4. All comments and their authors (comments are nested div[role="article"] elements)
+5. Any unique comment IDs (look for comment_id= in URLs)
 
-IMPORTANT:
-- The post text is usually in div[dir="auto"] elements NOT inside nested div[role="article"] elements
-- Comments are inside nested div[role="article"] elements
-- Ignore UI text like "Like", "Reply", "Share", timestamps, "Write a comment", etc.
-- Ignore photo/video captions that are just file descriptions
-- Return ONLY the actual human-written content
+RULES:
+- Extract ONLY human-written content
+- Ignore UI text: "Like", "Reply", "Share", "Write a comment", "Most relevant", reaction counts, timestamps, etc.
+- Ignore image alt text and accessibility labels
+- If you can't find a unique ID, use null
 
-Respond with JSON only:
-{"postText": "the main post content", "authorName": "Author Name or Unknown", "comments": [{"authorName": "Name", "commentText": "text"}]}`;
+Return JSON:
+{
+  "postId": "numeric_id_or_null",
+  "postText": "the actual post content",
+  "authorName": "Author Name",
+  "comments": [
+    {"commentId": "id_or_null", "authorName": "Name", "commentText": "text"}
+  ]
+}`;
 
-async function extractPostFromHtml(postId, html) {
-  if (!OPENAI_API_KEY) {
-    log(`WARNING: No OPENAI_API_KEY, cannot extract text from HTML for ${postId}`);
-    return null;
-  }
+async function extractPostFromHtml(html) {
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -246,30 +201,26 @@ async function extractPostFromHtml(postId, html) {
         model: 'gpt-5.2',
         messages: [
           { role: 'system', content: EXTRACTION_PROMPT },
-          { role: 'user', content: html.slice(0, 100000) }, // cap at ~100K chars to stay within context
+          { role: 'user', content: html.slice(0, 100000) },
         ],
         temperature: 0,
-        max_tokens: 2000,
+        max_completion_tokens: 2000,
         response_format: { type: 'json_object' },
       }),
     });
     if (!res.ok) {
       const errBody = await res.text().catch(() => '');
-      log(`OpenAI error ${res.status} for ${postId}: ${errBody.slice(0, 300)}`);
+      log(`  OpenAI error ${res.status}: ${errBody.slice(0, 200)}`);
       return null;
     }
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content || '';
     return JSON.parse(content);
   } catch (e) {
-    log(`AI extraction failed for ${postId}: ${e.message}`);
+    log(`  AI extraction failed: ${e.message}`);
     return null;
   }
 }
-
-// ── Post + comment extraction (runs in browser context) ──────────────
-
-// (Post extraction is now done inline during the scroll loop)
 
 // ── Main scrape function ─────────────────────────────────────────────
 
@@ -277,10 +228,7 @@ async function scrape() {
   log('Starting Facebook group scrape');
 
   const chromePath = findChrome();
-  if (!chromePath) {
-    log('ERROR: Could not find Chrome or Chromium. Install google-chrome or chromium.');
-    process.exit(1);
-  }
+  if (!chromePath) { log('ERROR: Chrome not found.'); process.exit(1); }
   log(`Using Chrome: ${chromePath}`);
 
   syncProfile();
@@ -291,17 +239,11 @@ async function scrape() {
       headless: HEADLESS ? 'new' : false,
       executablePath: chromePath,
       userDataDir: SCRAPER_PROFILE,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--window-size=1440,900',
-      ],
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled', '--window-size=1440,900'],
       defaultViewport: { width: 1440, height: 900 },
     });
 
     const page = await browser.newPage();
-
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
@@ -320,11 +262,9 @@ async function scrape() {
     log('Switching to Recent activity sort...');
     try {
       const sortClicked = await page.evaluate(() => {
-        const allEls = Array.from(document.querySelectorAll('span, div'));
-        for (const el of allEls) {
+        for (const el of document.querySelectorAll('span, div')) {
           const text = (el.textContent || '').trim().toLowerCase();
-          if ((text === 'new posts' || text === 'most relevant' || text === 'recent activity') &&
-              el.offsetParent !== null) {
+          if ((text === 'new posts' || text === 'most relevant' || text === 'recent activity') && el.offsetParent !== null) {
             (el.closest('[role="button"]') || el).click();
             return text;
           }
@@ -336,74 +276,32 @@ async function scrape() {
         await randomDelay(1500, 2500);
         const picked = await page.evaluate(() => {
           for (const item of document.querySelectorAll('div[role="menuitem"], div[role="option"], div[role="menuitemradio"], span')) {
-            const text = (item.textContent || '').trim().toLowerCase();
-            if (text === 'recent activity' || text.startsWith('recent activity')) {
-              item.click();
-              return true;
-            }
+            if ((item.textContent || '').trim().toLowerCase().startsWith('recent activity')) { item.click(); return true; }
           }
           return false;
         });
-        log(picked ? 'Sorted by Recent activity.' : 'Could not find "Recent activity" in dropdown.');
+        log(picked ? 'Sorted by Recent activity.' : 'Could not find "Recent activity" option.');
         await randomDelay(2000, 3000);
-      } else {
-        log('Sort dropdown not found.');
       }
-    } catch (e) {
-      log('Sort failed (non-fatal): ' + e.message);
-    }
+    } catch (e) { log('Sort failed (non-fatal): ' + e.message); }
 
     // Wait for feed
-    log('Waiting for feed...');
-    try {
-      await page.waitForSelector('div[role="feed"]', { timeout: 15000 });
-    } catch (e) {
-      log('Feed container not found, trying div[role="article"]...');
-      try { await page.waitForSelector('div[role="article"]', { timeout: 10000 }); } catch (e2) {}
-    }
+    try { await page.waitForSelector('div[role="feed"]', { timeout: 15000 }); }
+    catch { try { await page.waitForSelector('div[role="article"]', { timeout: 10000 }); } catch {} }
     await randomDelay(2000, 3000);
 
-    const seenData = loadSeenPosts();
-    log(`Loaded ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
-    const hasPriorData = seenData.ids.size > 0 || seenData.fingerprints.size > 0;
-
-    function isKnownFingerprint(fp) {
-      if (!fp || fp.length === 0) return false;
-      const fpShort = fp.slice(0, 40);
-      for (const saved of seenData.fingerprints) {
-        if (saved.startsWith(fpShort) || fp.startsWith(saved.slice(0, 40))) return true;
-      }
-      return false;
-    }
-
-    // ── Scroll + extract loop ──────────────────────────────────────
-    const allPosts = [];
-    const processedFingerprints = new Set();
-    const collectedFingerprints = []; // for saving to seen-posts
-    let scrollCount = 0;
-    let consecutiveKnown = 0;
-    let foundKnown = false;
-
-    // Switch comment sort to "Newest" on all visible posts
+    // Switch comment sort to "Newest"
     async function sortCommentsNewest() {
       const switched = await page.evaluate(async () => {
         let count = 0;
-        // Find comment sort buttons — they say "Most relevant", "Newest", etc.
-        const buttons = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'));
-        for (const btn of buttons) {
+        for (const btn of document.querySelectorAll('div[role="button"], span[role="button"]')) {
           const text = (btn.textContent || '').trim().toLowerCase();
           if (text === 'most relevant' || text === 'all comments') {
-            btn.click();
-            count++;
+            btn.click(); count++;
             await new Promise(r => setTimeout(r, 800));
-            // Click "Newest" in the dropdown
-            const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], span'));
-            for (const item of items) {
-              const t = (item.textContent || '').trim().toLowerCase();
-              if (t === 'newest' || t.startsWith('newest')) {
-                item.click();
-                await new Promise(r => setTimeout(r, 500));
-                break;
+            for (const item of document.querySelectorAll('div[role="menuitem"], div[role="option"], span')) {
+              if ((item.textContent || '').trim().toLowerCase().startsWith('newest')) {
+                item.click(); await new Promise(r => setTimeout(r, 500)); break;
               }
             }
           }
@@ -413,60 +311,77 @@ async function scrape() {
       if (switched > 0) log(`Switched ${switched} comment section(s) to Newest.`);
     }
 
+    const seenData = loadSeenPosts();
+    log(`Loaded ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
+    const hasPriorData = seenData.ids.size > 0 || seenData.fingerprints.size > 0;
+
+    // ── Scroll + extract loop ──────────────────────────────────────
+    const allExtracted = [];     // final extracted posts+comments for API
+    const processedHtmlHashes = new Set(); // avoid re-processing same article
+    let scrollCount = 0;
+    let consecutiveKnown = 0;
+    let foundKnown = false;
+
     for (let round = 0; round <= MAX_SCROLLS; round++) {
-      // Sort comments by newest before extracting
       await sortCommentsNewest();
       await randomDelay(500, 1000);
 
-      // Extract all visible top-level posts — grab cleaned HTML and let AI parse it
-      const postData = await page.evaluate(() => {
-        const articles = document.querySelectorAll('div[role="article"]');
+      // Grab raw HTML of each top-level article
+      const articleHtmls = await page.evaluate(() => {
         const results = [];
-        for (const article of articles) {
-          // Skip nested articles (comments)
+        for (const article of document.querySelectorAll('div[role="article"]')) {
           if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-
-          // Get rough textContent for fingerprinting (doesn't need to be perfect)
-          const roughText = (article.textContent || '').replace(/\s+/g, ' ').trim();
-          if (roughText.length < 10) continue;
-
-          // Send raw HTML — AI will parse it
-          const postHtml = article.innerHTML;
-
-          // Post ID
-          let postId = '';
-          for (const link of article.querySelectorAll('a[href]')) {
-            const m = (link.getAttribute('href') || '').match(/\/permalink\/(\d+)|\/posts\/(\d+)|story_fbid=(\d+)/);
-            if (m) { postId = m[1] || m[2] || m[3]; break; }
-          }
-          if (!postId) postId = 'pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-
-          // Fingerprint from rough text (first 80 chars, for dedup only)
-          const fingerprint = roughText.toLowerCase().slice(0, 80);
-
-          results.push({ postId, postHtml, fingerprint, timestamp: new Date().toISOString() });
+          results.push(article.innerHTML);
         }
         return results;
       });
 
-      // Process new posts we haven't seen in this run
-      for (const item of postData) {
-        if (processedFingerprints.has(item.fingerprint)) continue;
-        processedFingerprints.add(item.fingerprint);
+      for (const html of articleHtmls) {
+        // Simple hash to avoid re-processing the same article across scroll rounds
+        const hash = html.slice(0, 200);
+        if (processedHtmlHashes.has(hash)) continue;
+        processedHtmlHashes.add(hash);
 
-        const isKnown = hasPriorData && (seenData.ids.has(item.postId) || isKnownFingerprint(item.fingerprint));
+        // Send to AI
+        log(`Extracting article (${Math.round(html.length / 1024)}KB)...`);
+        const result = await extractPostFromHtml(html);
+        if (!result || !result.postText) {
+          log('  ❌ AI returned no text, skipping.');
+          continue;
+        }
 
-        log(`${isKnown ? 'KNOWN' : 'NEW  '} | ${item.fingerprint.slice(0, 60)}...`);
+        const postId = result.postId || ('pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+        const fp = makeFingerprint(result.postText);
+        const known = hasPriorData && isKnownPost(seenData, postId, fp);
 
-        // Send the HTML — the server-side AI will extract text + comments
-        allPosts.push({
-          postId: item.postId,
-          postHtml: item.postHtml,
-          timestamp: item.timestamp,
+        log(`  ${known ? 'KNOWN' : 'NEW  '} 📝 ${result.authorName}: ${result.postText.slice(0, 100)}`);
+        for (const c of (result.comments || [])) {
+          log(`         💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
+        }
+
+        // Save to seen data
+        seenData.ids.add(postId);
+        if (fp) seenData.fingerprints.add(fp);
+
+        // Build posts for API
+        allExtracted.push({
+          postId,
+          authorName: result.authorName || 'Unknown',
+          postText: result.postText.slice(0, 2000),
+          timestamp: new Date().toISOString(),
         });
-        collectedFingerprints.push({ postId: item.postId, fingerprint: item.fingerprint });
+        for (let i = 0; i < (result.comments || []).length; i++) {
+          const c = result.comments[i];
+          if (!c.commentText) continue;
+          allExtracted.push({
+            postId: c.commentId || `${postId}-c${i}`,
+            authorName: c.authorName || 'Unknown',
+            postText: c.commentText.slice(0, 2000),
+            timestamp: new Date().toISOString(),
+          });
+        }
 
-        if (isKnown) {
+        if (known) {
           consecutiveKnown++;
           if (consecutiveKnown >= 2) {
             log(`Hit ${consecutiveKnown} consecutive known posts — stopping.`);
@@ -480,105 +395,51 @@ async function scrape() {
 
       if (foundKnown || round >= MAX_SCROLLS) break;
 
-      // Scroll
       await page.evaluate((amt) => window.scrollBy(0, amt), 600 + Math.floor(Math.random() * 800));
       scrollCount++;
       log(`Scroll ${scrollCount}/${MAX_SCROLLS}...`);
-      await randomDelay(2000, 2000 + Math.random() * 2000);
+      await randomDelay(2000, 4000);
     }
 
     if (!foundKnown && hasPriorData) {
       log(`Hit max scrolls (${MAX_SCROLLS}) without finding enough known posts.`);
     }
 
-    const posts = allPosts;
-    log(`Total: ${posts.length} articles scraped. Running AI extraction...`);
-
-    if (posts.length === 0) {
-      log('No posts found. Try HEADLESS=false to debug.');
-      await sendEmail('No posts found', '<p>Scraper ran but found 0 posts.</p>');
-      await browser.close();
-      process.exit(0);
-    }
-
-    // Save fingerprints for next run
-    for (const item of collectedFingerprints) {
-      seenData.ids.add(item.postId);
-      if (item.fingerprint && item.fingerprint.length > 0) {
-        seenData.fingerprints.add(item.fingerprint);
-      }
-    }
     saveSeenPosts(seenData);
     log(`Saved ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
 
-    // AI extraction: convert HTML to clean text + comments
-    const extractedPosts = [];
-    for (const item of posts) {
-      const result = await extractPostFromHtml(item.postId, item.postHtml);
-      if (!result || !result.postText) {
-        log(`  ❌ ${item.postId}: AI returned no text`);
-        continue;
-      }
-      log(`  📝 ${result.authorName || 'Unknown'}: ${result.postText.slice(0, 100)}`);
-      // Main post
-      extractedPosts.push({
-        postId: item.postId,
-        authorName: result.authorName || 'Unknown',
-        postText: result.postText.slice(0, 2000),
-        timestamp: item.timestamp,
-      });
-      // Comments
-      for (let i = 0; i < (result.comments || []).length; i++) {
-        const c = result.comments[i];
-        if (!c.commentText) continue;
-        log(`    💬 ${c.authorName || 'Unknown'}: ${c.commentText.slice(0, 100)}`);
-        extractedPosts.push({
-          postId: `${item.postId}-c${i}`,
-          authorName: c.authorName || 'Unknown',
-          postText: c.commentText.slice(0, 2000),
-          timestamp: item.timestamp,
-        });
-      }
-    }
+    const postCount = allExtracted.filter(p => !p.postId.includes('-c')).length;
+    const commentCount = allExtracted.length - postCount;
+    log(`Total: ${postCount} posts + ${commentCount} comments`);
 
-    const postCount = posts.length;
-    const commentCount = extractedPosts.length - postCount;
-    log(`Extracted: ${extractedPosts.length} items (${postCount} posts + ${Math.max(0, commentCount)} comments)`);
-
-    if (extractedPosts.length === 0) {
-      log('AI extraction returned nothing. Check OPENAI_API_KEY.');
-      await sendEmail('AI extraction failed', '<p>Scraper found posts but AI could not extract text.</p>');
+    if (allExtracted.length === 0) {
+      log('Nothing extracted. Try HEADLESS=false to debug.');
+      await sendEmail('No posts found', '<p>Scraper ran but extracted 0 items.</p>');
       await browser.close();
       process.exit(0);
     }
 
-    // Snapshot trail statuses BEFORE ingest
+    // Send to ingest API
     const beforeStatuses = await fetchTrailStatuses();
 
-    log(`Sending ${extractedPosts.length} extracted posts to ${API_URL}/api/scrape/ingest`);
+    log(`Sending ${allExtracted.length} items to ${API_URL}/api/scrape/ingest`);
     const response = await fetch(`${API_URL}/api/scrape/ingest`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_SECRET}`,
-      },
-      body: JSON.stringify({ posts: extractedPosts }),
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_SECRET}` },
+      body: JSON.stringify({ posts: allExtracted }),
     });
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
       log(`API error ${response.status}: ${errText.slice(0, 500)}`);
-      await sendEmail(`API error ${response.status}`, `<p>Scraper extracted ${posts.length} items but API returned ${response.status}:</p><pre>${errText.slice(0, 500)}</pre>`);
+      await sendEmail(`API error ${response.status}`, `<pre>${errText.slice(0, 500)}</pre>`);
       process.exit(1);
     }
 
     const result = await response.json();
     log(`Done! stored=${result.stored}, classified=${result.classified}, verified=${result.verified || 0}`);
 
-    // Snapshot trail statuses AFTER ingest
     const afterStatuses = await fetchTrailStatuses();
-
-    // Build trail status table for email
     const trailNames = Object.keys(afterStatuses).sort();
     let changedCount = 0;
     const trailRows = trailNames.map(name => {
@@ -593,23 +454,19 @@ async function scrape() {
 
     const unmatched = result.unmatchedPosts || [];
     const unmatchedHtml = unmatched.length > 0
-      ? `<h3>⚠️ Unmatched Posts (${unmatched.length})</h3>
-         <p style="font-size:12px;color:#666">These posts seem trail-related but couldn't be matched to a specific trail.</p>
+      ? `<h3>⚠️ Unmatched (${unmatched.length})</h3>
          <table style="border-collapse:collapse;font-size:13px;width:100%">
-           <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Type</th><th style="padding:4px 8px;text-align:left">Post</th></tr>
-           ${unmatched.map(p => `<tr><td style="padding:4px 8px;vertical-align:top;color:${p.classification === 'dry' ? 'green' : 'red'}">${p.classification}</td><td style="padding:4px 8px">${p.text}</td></tr>`).join('')}
+           ${unmatched.map(p => `<tr><td style="padding:4px 8px;color:${p.classification === 'dry' ? 'green' : 'red'}">${p.classification}</td><td style="padding:4px 8px">${p.text}</td></tr>`).join('')}
          </table>`
       : '';
 
     const subject = changedCount > 0
-      ? `${changedCount} trail status change${changedCount > 1 ? 's' : ''} — ${postCount} posts, ${Math.max(0, commentCount)} comments`
-      : unmatched.length > 0
-        ? `${unmatched.length} unmatched — ${postCount} posts, ${Math.max(0, commentCount)} comments`
-        : `${postCount} posts, ${Math.max(0, commentCount)} comments — no changes`;
+      ? `${changedCount} trail change${changedCount > 1 ? 's' : ''} — ${postCount} posts`
+      : `${postCount} posts, ${commentCount} comments — no changes`;
 
     await sendEmail(subject,
-      `<h3>Scraper Run Complete</h3>
-       <p>Articles: ${postCount} · Comments: ${Math.max(0, commentCount)} · Scrolls: ${scrollCount} · Stored: ${result.stored} · Classified: ${result.classified}</p>
+      `<h3>Scraper Run</h3>
+       <p>Posts: ${postCount} · Comments: ${commentCount} · Scrolls: ${scrollCount} · Stored: ${result.stored} · Classified: ${result.classified}</p>
        ${unmatchedHtml}
        <h3>Trail Statuses${changedCount > 0 ? ` (${changedCount} changed)` : ''}</h3>
        <table style="border-collapse:collapse;font-size:14px">
@@ -621,12 +478,11 @@ async function scrape() {
   } catch (err) {
     log(`ERROR: ${err.message}`);
     if (err.stack) log(err.stack);
-    await sendEmail('Scraper error', `<p>Scraper failed:</p><pre>${err.message}\n${err.stack || ''}</pre>`);
+    await sendEmail('Scraper error', `<pre>${err.message}\n${err.stack || ''}</pre>`);
     process.exit(1);
   } finally {
     if (browser) await browser.close();
   }
 }
 
-// ── Run ──────────────────────────────────────────────────────────────
 scrape();
