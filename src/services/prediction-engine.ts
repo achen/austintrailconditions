@@ -248,6 +248,7 @@ export async function updatePredictions(openaiClient?: OpenAI): Promise<Predicti
       conditionStatus: row.condition_status as Trail['conditionStatus'],
       createdAt: new Date(row.created_at as string),
       updatedAt: new Date(row.updated_at as string),
+      aliases: [],
     };
 
     // Get the most recent ended rain event for this trail
