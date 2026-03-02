@@ -162,116 +162,99 @@ async function fetchTrailStatuses() {
 // ── GraphQL response parser ──────────────────────────────────────────
 
 /**
+ * Extract post text from a story node.
+ * FB puts it in different places depending on the message rendering strategy.
+ */
+function extractText(story) {
+  // 1) Direct message.text on the story
+  if (story?.message?.text) return story.message.text;
+
+  // 2) Nested in comet_sections → content → story → comet_sections → message → story → message.text
+  const msgStory = story?.comet_sections?.content?.story?.comet_sections?.message?.story;
+  if (msgStory?.message?.text) return msgStory.message.text;
+
+  // 3) Rich message (multiple blocks joined)
+  const richMsg = msgStory?.rich_message;
+  if (Array.isArray(richMsg)) {
+    const text = richMsg.map(b => b.text || '').join('\n').trim();
+    if (text) return text;
+  }
+
+  // 4) message_container fallback
+  const container = story?.comet_sections?.content?.story?.comet_sections?.message_container?.story;
+  if (container?.message?.text) return container.message.text;
+
+  return null;
+}
+
+/**
+ * Extract posts from a single GraphQL response.
+ * Handles two formats:
+ *   1) data.node.group_feed.edges[].node (batch)
+ *   2) data.node (streamed individual story, with label containing "group_feed")
+ */
+function extractPostsFromGraphQL(responseObj) {
+  const stories = [];
+
+  // Format 1: batch edges
+  const edges = responseObj?.data?.node?.group_feed?.edges;
+  if (Array.isArray(edges)) {
+    for (const edge of edges) {
+      if (edge?.node?.__typename === 'Story') stories.push(edge.node);
+    }
+  }
+
+  // Format 2: streamed individual story
+  if (responseObj?.label && responseObj.label.includes('group_feed') && responseObj?.data?.node?.__typename === 'Story') {
+    stories.push(responseObj.data.node);
+  }
+
+  // Extract post data from each story
+  const posts = [];
+  for (const story of stories) {
+    const postText = extractText(story);
+    if (!postText || postText.length < 3) continue;
+
+    const postId = story.post_id || pickBestId(story);
+    const authorName = story.feedback?.owning_profile?.name || pickAuthor(story) || 'Unknown';
+    const comments = extractCommentsFromStory(story);
+
+    posts.push({ postId: String(postId), authorName, postText, comments });
+  }
+
+  return posts;
+}
+
+/**
  * Pick the best stable ID for a story node.
- * Prefers numeric IDs over base64 opaque IDs.
  */
 function pickBestId(story) {
-  // 1) Numeric top-level post ID from feedback
-  const topLevel = story?.feedback?.associated_group?.top_level_post_id;
-  if (topLevel && /^\d+$/.test(String(topLevel))) return String(topLevel);
-
-  // 2) post_id field directly on story
   if (story?.post_id && /^\d+$/.test(String(story.post_id))) return String(story.post_id);
-
-  // 3) Try to decode numeric ID from base64 story ID
   if (story?.id) {
     try {
       const decoded = Buffer.from(story.id, 'base64').toString('utf-8');
       const match = decoded.match(/(\d{10,})/);
       if (match) return match[1];
     } catch {}
-    // If story.id is already numeric, use it
     if (/^\d+$/.test(String(story.id))) return String(story.id);
   }
-
-  // 4) Last resort
   return String(story?.id || 'gql-' + Date.now());
 }
 
-/**
- * Pick the author name from a story node.
- * FB hides it in several places depending on the story variant.
- */
+/** Pick author from various locations in the story */
 function pickAuthor(story) {
   return (
+    story?.feedback?.owning_profile?.name ||
     story?.actors?.[0]?.name ||
     story?.comet_sections?.context_layout?.story?.comet_sections?.actor_photo?.story?.actors?.[0]?.name ||
-    story?.comet_sections?.context_layout?.story?.actors?.[0]?.name ||
-    findAuthorDeep(story, 0) ||
     null
   );
-}
-
-/** Recursively search for author name, limited depth */
-function findAuthorDeep(obj, depth) {
-  if (!obj || typeof obj !== 'object' || depth > 6) return null;
-  if (obj.actors && Array.isArray(obj.actors) && obj.actors[0]?.name) return obj.actors[0].name;
-  if (obj.author?.name) return obj.author.name;
-  if ((obj.__typename === 'User' || obj.__typename === 'Page') && obj.name) return obj.name;
-
-  for (const key of ['comet_sections', 'context_layout', 'story', 'content', 'actor_photo']) {
-    if (obj[key]) {
-      const found = findAuthorDeep(obj[key], depth + 1);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-/**
- * Extract posts from Facebook's GraphQL group_feed structure.
- * Dedupes by author+text to eliminate wrapper/reshared story duplicates.
- */
-function extractPostsFromGraphQL(data) {
-  const posts = [];
-  const seen = new Set();
-
-  const edges = findGroupFeedEdges(data);
-
-  for (const edge of edges) {
-    const story = edge.node || edge;
-    if (!story || story.__typename !== 'Story') continue;
-
-    const postText = story.message?.text;
-    if (!postText || postText.length < 3) continue;
-
-    const author = pickAuthor(story) || 'Unknown';
-    const postId = pickBestId(story);
-
-    // Dedup by author + first 120 chars of text
-    const key = author + '|' + postText.slice(0, 120);
-    if (seen.has(key)) continue;
-    // Also dedup by just text (catches Unknown author duplicates)
-    const textKey = postText.slice(0, 120).toLowerCase();
-    if (seen.has(textKey)) continue;
-    seen.add(key);
-    seen.add(textKey);
-
-    const comments = extractCommentsFromStory(story);
-    posts.push({ postId, authorName: author, postText, comments });
-  }
-
-  return posts;
-}
-
-/** Recursively find group_feed.edges arrays in the data */
-function findGroupFeedEdges(obj, depth = 0) {
-  if (!obj || typeof obj !== 'object' || depth > 15) return [];
-  if (obj.group_feed && obj.group_feed.edges) return obj.group_feed.edges;
-
-  let results = [];
-  if (Array.isArray(obj)) {
-    for (const item of obj) results = results.concat(findGroupFeedEdges(item, depth + 1));
-  } else {
-    for (const key of Object.keys(obj)) results = results.concat(findGroupFeedEdges(obj[key], depth + 1));
-  }
-  return results;
 }
 
 /** Extract comments from a story's feedback structure */
 function extractCommentsFromStory(story) {
   const comments = [];
-  const feedback = story.feedback || story.comet_sections?.feedback;
+  const feedback = story?.feedback || story?.comet_sections?.feedback;
   if (!feedback) return comments;
   findCommentNodes(feedback, comments, new Set());
   return comments;
@@ -287,7 +270,7 @@ function findCommentNodes(obj, results, seenTexts, depth = 0) {
       if (!seenTexts.has(fp)) {
         seenTexts.add(fp);
         const author = obj.author?.name || obj.actors?.[0]?.name || 'Unknown';
-        const commentId = obj.id || obj.legacy_token || null;
+        const commentId = obj.id || null;
         results.push({ commentId, authorName: author, commentText: text });
       }
     }
@@ -411,39 +394,24 @@ async function scrape() {
       process.exit(2);
     }
 
-    // ── DEBUG_FIRST: dump GraphQL data to console and exit ────────
+    // ── DEBUG_FIRST: extract and print structured posts as JSON ───
     if (process.env.DEBUG_FIRST === 'true') {
-      log(`DEBUG_FIRST — ${graphqlResponses.length} GraphQL responses, ${gqlHits.length} post-like`);
+      log(`DEBUG_FIRST — ${graphqlResponses.length} GraphQL responses`);
 
-      // Print post-like payload samples
-      for (let i = 0; i < gqlHits.length; i++) {
-        const h = gqlHits[i];
-        log(`\n=== POST-LIKE #${i} (${h.len} chars) ===`);
-        console.log(h.sample);
-      }
-
-      // Try to extract posts
       let allPosts = [];
+      const seenDebug = new Set();
       for (const resp of graphqlResponses) {
-        allPosts.push(...extractPostsFromGraphQL(resp));
+        const posts = extractPostsFromGraphQL(resp);
+        for (const p of posts) {
+          const key = p.postText.slice(0, 120).toLowerCase();
+          if (seenDebug.has(key)) continue;
+          seenDebug.add(key);
+          allPosts.push(p);
+        }
       }
 
-      if (allPosts.length > 0) {
-        log(`\nExtracted ${allPosts.length} posts:`);
-        for (const p of allPosts) {
-          log(`  📝 [${p.postId}] ${p.authorName}: ${(p.postText || '').slice(0, 150)}`);
-          for (const c of p.comments) {
-            log(`     💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
-          }
-        }
-      } else {
-        log('\nNo posts extracted. Dumping all GraphQL responses...');
-        for (let i = 0; i < graphqlResponses.length; i++) {
-          const str = JSON.stringify(graphqlResponses[i]);
-          log(`\n--- Response #${i} (${str.length} chars) ---`);
-          console.log(str.slice(0, 3000));
-        }
-      }
+      log(`Extracted ${allPosts.length} unique posts`);
+      console.log(JSON.stringify(allPosts, null, 2));
 
       await browser.close();
       process.exit(0);
