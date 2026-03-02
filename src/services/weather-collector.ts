@@ -168,49 +168,120 @@ export async function shouldPollFrequently(): Promise<boolean> {
   return !!dryingTrailsResult.rows[0]?.has_drying_trails;
 }
 /**
- * Check the WU 5-day forecast for Austin to see if rain is expected today or tomorrow.
- * Returns true if precipitation chance >= 30% in the next 2 days.
- * This is a single API call that replaces polling 19 individual stations.
+ * Check the WU 5-day forecast for Austin to find when rain is expected.
+ * 1. Calls the 5-day daily forecast (1 API call) to see if rain >= 30% in any daypart.
+ * 2. If rain found, calls the hourly forecast (1 more API call) to find the exact hour.
+ * Returns when to start hourly station polling (4 hours before rain).
+ *
+ * Total: 1 API call on dry days, 2 API calls when rain is coming.
  */
 export async function isRainForecast(
   apiKey: string,
   baseUrl: string = process.env.WEATHER_API_BASE_URL || 'https://api.weather.com'
-): Promise<{ rainExpected: boolean; maxChance: number; details: string }> {
-  // Austin, TX geocode
-  const url = `${baseUrl}/v3/wx/forecast/daily/5day?geocode=30.27,-97.74&format=json&units=e&language=en-US&apiKey=${encodeURIComponent(apiKey)}`;
+): Promise<{ rainExpected: boolean; maxChance: number; details: string; pollAfterUtc: Date | null; pollUntilUtc: Date | null }> {
+  const dailyUrl = `${baseUrl}/v3/wx/forecast/daily/5day?geocode=30.27,-97.74&format=json&units=e&language=en-US&apiKey=${encodeURIComponent(apiKey)}`;
 
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) {
-      console.error(`Forecast API error: ${response.status}`);
-      // On error, assume rain possible so we don't miss events
-      return { rainExpected: true, maxChance: -1, details: `API error ${response.status}` };
+    // Step 1: Check 5-day daily forecast
+    const dailyResp = await fetch(dailyUrl, { signal: AbortSignal.timeout(10000) });
+    if (!dailyResp.ok) {
+      console.error(`Forecast API error: ${dailyResp.status}`);
+      return { rainExpected: true, maxChance: -1, details: `API error ${dailyResp.status}`, pollAfterUtc: new Date(), pollUntilUtc: null };
     }
 
-    const data = await response.json();
-    const dayParts = data.daypart?.[0];
+    const dailyData = await dailyResp.json();
+    const dayParts = dailyData.daypart?.[0];
     if (!dayParts?.precipChance) {
-      return { rainExpected: true, maxChance: -1, details: 'No forecast data' };
+      return { rainExpected: true, maxChance: -1, details: 'No forecast data', pollAfterUtc: new Date(), pollUntilUtc: null };
     }
 
-    // Check today only (first 2 dayparts: today day and tonight)
-    // Don't start hourly polling for rain that's days away
-    const chances: number[] = [];
-    for (let i = 0; i < 2 && i < dayParts.precipChance.length; i++) {
-      const chance = dayParts.precipChance[i];
-      if (chance !== null) chances.push(chance);
+    // Find max precip chance across all dayparts
+    let maxChance = 0;
+    let hasRain = false;
+    for (const chance of dayParts.precipChance) {
+      if (chance !== null && chance > maxChance) maxChance = chance;
+      if (chance !== null && chance >= 30) hasRain = true;
     }
 
-    const maxChance = chances.length > 0 ? Math.max(...chances) : 0;
-    const rainExpected = maxChance >= 30;
-    const details = `Today max precip chance: ${maxChance}%`;
+    if (!hasRain) {
+      return { rainExpected: false, maxChance, details: `5-day max precip: ${maxChance}% — no rain expected`, pollAfterUtc: null, pollUntilUtc: null };
+    }
 
-    return { rainExpected, maxChance, details };
+    // Step 2: Rain found — get hourly forecast to find exact start and end hours
+    const hourlyUrl = `${baseUrl}/v3/wx/forecast/hourly/2day?geocode=30.27,-97.74&format=json&units=e&language=en-US&apiKey=${encodeURIComponent(apiKey)}`;
+    let pollAfterUtc: Date | null = null;
+    let pollUntilUtc: Date | null = null;
+    let rainHourDetail = '';
+
+    try {
+      const hourlyResp = await fetch(hourlyUrl, { signal: AbortSignal.timeout(10000) });
+      if (hourlyResp.ok) {
+        const hourlyData = await hourlyResp.json();
+        const validTimes = hourlyData.validTimeUtc as number[] | undefined;
+        const precipChances = hourlyData.precipChance as number[] | undefined;
+
+        if (validTimes && precipChances) {
+          // Find first and last hour with >= 30% chance
+          let lastRainIndex: number | null = null;
+
+          for (let i = 0; i < precipChances.length; i++) {
+            if (precipChances[i] >= 30) {
+              if (pollAfterUtc === null) {
+                const rainStartUtc = new Date(validTimes[i] * 1000);
+                pollAfterUtc = new Date(rainStartUtc.getTime() - 4 * 60 * 60 * 1000);
+                const rainStartCt = rainStartUtc.toLocaleString('en-US', {
+                  timeZone: 'America/Chicago',
+                  weekday: 'short', hour: 'numeric', minute: '2-digit',
+                });
+                rainHourDetail = ` Rain starts ~${rainStartCt}`;
+              }
+              lastRainIndex = i;
+            }
+          }
+
+          // Stop polling 3 hours after the last forecasted rain hour
+          if (lastRainIndex !== null) {
+            const rainEndUtc = new Date(validTimes[lastRainIndex] * 1000);
+            pollUntilUtc = new Date(rainEndUtc.getTime() + 3 * 60 * 60 * 1000);
+            const rainEndCt = rainEndUtc.toLocaleString('en-US', {
+              timeZone: 'America/Chicago',
+              weekday: 'short', hour: 'numeric', minute: '2-digit',
+            });
+            rainHourDetail += `, ends ~${rainEndCt}. Stop polling 3h after.`;
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Hourly forecast failed, using daypart estimate:', err instanceof Error ? err.message : err);
+    }
+
+    // Fallback to daypart estimate if hourly didn't work
+    if (!pollAfterUtc) {
+      for (let i = 0; i < dayParts.precipChance.length; i++) {
+        if (dayParts.precipChance[i] !== null && dayParts.precipChance[i] >= 30) {
+          const dayOffset = Math.floor(i / 2);
+          const isNight = i % 2 === 1;
+          const now = new Date();
+          const startOfDayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+          const rainStartUtcHour = isNight ? (19 + 6) % 24 : (7 + 6) % 24;
+          const rainStartUtc = new Date(startOfDayUtc);
+          rainStartUtc.setUTCDate(rainStartUtc.getUTCDate() + dayOffset);
+          rainStartUtc.setUTCHours(rainStartUtcHour, 0, 0, 0);
+          pollAfterUtc = new Date(rainStartUtc.getTime() - 4 * 60 * 60 * 1000);
+          // For daypart fallback, estimate rain lasts 12 hours + 3 hour buffer
+          pollUntilUtc = new Date(rainStartUtc.getTime() + 15 * 60 * 60 * 1000);
+          rainHourDetail = ` (daypart estimate, day ${dayOffset + 1} ${isNight ? 'night' : 'day'})`;
+          break;
+        }
+      }
+    }
+
+    const details = `Rain ${maxChance}% in forecast.${rainHourDetail} Poll after ${pollAfterUtc?.toISOString() ?? 'now'}`;
+    return { rainExpected: true, maxChance, details, pollAfterUtc, pollUntilUtc };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`Forecast check failed: ${msg}`);
-    // Fail open — assume rain possible
-    return { rainExpected: true, maxChance: -1, details: `Error: ${msg}` };
+    return { rainExpected: true, maxChance: -1, details: `Error: ${msg}`, pollAfterUtc: new Date(), pollUntilUtc: null };
   }
 }
 

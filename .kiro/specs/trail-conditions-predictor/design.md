@@ -15,7 +15,7 @@ The system operates on a data pipeline model:
 
 - **Next.js App Router** with API routes for cron endpoints and server components for the dashboard.
 - **Vercel Postgres** (Neon) for PostgreSQL database.
-- **Vercel Cron** for scheduled data collection (weather: adaptive — daily when dry, hourly when raining/drying; Facebook every 30 min; prediction refresh every 30 min).
+- **Vercel Cron** for scheduled data collection. Weather uses a forecast-driven adaptive strategy: 1 API call/day for the 5-day forecast (cached), plus 1 hourly forecast call when rain is found, then hourly station polling starting 4 hours before forecasted rain and stopping 3 hours after the last forecasted rain hour if no actual precipitation falls. Facebook every 30 min; prediction refresh every 30 min.
 - **OpenAI API** for post classification and drying predictions, with rule-based fallback.
 - **Server-side rendering** for the dashboard to meet the 2-second load requirement.
 
@@ -283,7 +283,7 @@ interface ConfigValidator {
 
 | Route | Method | Purpose | Trigger |
 |---|---|---|---|
-| `/api/cron/weather` | GET | Check if polling is needed (adaptive), fetch + store weather observations, evaluate rain events | Vercel Cron (hourly) |
+| `/api/cron/weather` | GET | Forecast-driven adaptive polling: check 5-day forecast (cached daily), call hourly forecast when rain found, poll stations 4h before rain through 3h after last forecasted rain hour. Skip station polls entirely on dry days. | Vercel Cron (hourly) |
 | `/api/cron/facebook` | GET | Fetch + store + classify Facebook posts | Vercel Cron (30 min) |
 | `/api/cron/predict` | GET | Update predictions for all "Drying" trails | Vercel Cron (30 min) |
 | `/api/trails` | GET/POST | List active trails / Create trail | Dashboard admin |

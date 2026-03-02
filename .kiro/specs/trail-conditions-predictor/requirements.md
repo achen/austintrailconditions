@@ -32,7 +32,13 @@ The Trail Conditions Predictor is a system that predicts when mountain bike trai
 1. WHEN a scheduled Cron_Job fires, THE Weather_Collector SHALL fetch the latest Weather_Observation data from the Weather Underground API for each unique primary weather station associated with active Trails.
 2. THE Weather_Collector SHALL store each Weather_Observation in the Vercel Postgres database with the following fields: timestamp, precipitation amount (inches), temperature (°F), relative humidity (%), wind speed (mph), solar radiation (W/m²), and daylight hours (calculated from date and latitude).
 3. IF the Weather Underground API returns an error or is unreachable for a given station, THEN THE Weather_Collector SHALL log the failure with the error details and retry on the next scheduled interval.
-4. THE Weather_Collector SHALL use adaptive polling: once per day when no active Rain_Events exist, and every 60 minutes when any Rain_Event is active or any Trail has a Condition_Status other than "Verified Rideable" or "Probably Rideable".
+4. THE Weather_Collector SHALL use a forecast-driven adaptive polling strategy to minimize API calls:
+   a. WHEN no active Rain_Events exist AND all Trails have a Condition_Status of "Verified Rideable" or "Probably Rideable", THE Weather_Collector SHALL check the 5-day daily forecast once per day (1 API call, cached in the `weather_forecasts` table).
+   b. IF the 5-day forecast shows precipitation chance >= 30% in any daypart, THE Weather_Collector SHALL call the 2-day hourly forecast (1 additional API call) to determine the exact hour rain is expected to start and end.
+   c. THE Weather_Collector SHALL begin hourly station polling 4 hours before the first forecasted rain hour (`poll_after_utc`).
+   d. THE Weather_Collector SHALL stop hourly station polling 3 hours after the last forecasted rain hour (`poll_until_utc`) IF no actual precipitation was detected during the polling window (false alarm).
+   e. IF actual precipitation is detected, THE Weather_Collector SHALL continue hourly polling as long as any Rain_Event is active or any Trail has a Condition_Status of "Probably Not Rideable" or "Verified Not Rideable".
+   f. IF the 5-day forecast shows no precipitation chance >= 30%, THE Weather_Collector SHALL skip station polling entirely (forecast-only mode, 1 API call total for the day).
 5. IF a duplicate Weather_Observation timestamp already exists for the same station, THEN THE Weather_Collector SHALL skip the duplicate record without error.
 6. THE Weather_Collector SHALL only fetch from distinct station IDs to avoid redundant API calls when multiple Trails share the same primary station.
 
