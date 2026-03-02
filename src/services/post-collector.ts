@@ -56,12 +56,12 @@ export async function fetchPosts(
 /**
  * Store trail reports in the database.
  * Uses ON CONFLICT (post_id) DO NOTHING for deduplication.
- * Returns the count of newly inserted records.
+ * Returns the set of newly inserted post IDs.
  */
-export async function storePosts(posts: TrailReport[]): Promise<number> {
-  if (posts.length === 0) return 0;
+export async function storePosts(posts: TrailReport[]): Promise<Set<string>> {
+  if (posts.length === 0) return new Set();
 
-  let insertedCount = 0;
+  const inserted = new Set<string>();
 
   for (const post of posts) {
     const result = await sql`
@@ -83,9 +83,9 @@ export async function storePosts(posts: TrailReport[]): Promise<number> {
       ON CONFLICT (post_id) DO NOTHING
     `;
     if (result.rowCount && result.rowCount > 0) {
-      insertedCount++;
+      inserted.add(post.postId);
     }
   }
 
-  return insertedCount;
+  return inserted;
 }

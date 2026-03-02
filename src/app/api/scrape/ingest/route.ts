@@ -47,7 +47,7 @@ export async function POST(request: Request) {
       flaggedForReview: false,
     }));
 
-    const stored = await storePosts(posts);
+    const newPostIds = await storePosts(posts);
 
     let classified = 0;
     const unmatchedPosts: Array<{ postId: string; text: string; classification: string }> = [];
@@ -57,6 +57,7 @@ export async function POST(request: Request) {
       const knownTrailNames = activeTrails.map((t) => t.name);
 
       for (const post of posts) {
+        if (!newPostIds.has(post.postId)) continue; // Skip already-stored posts
         if (!post.postText || post.postText.length < 3) continue;
         try {
           const result = await classify(post, knownTrailNames);
@@ -82,7 +83,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       received: rawPosts.length,
-      stored,
+      stored: newPostIds.size,
       classified,
       verified: verifications.length,
       unmatchedPosts: unmatchedPosts.length > 0 ? unmatchedPosts : undefined,

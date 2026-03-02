@@ -122,7 +122,7 @@ export async function GET(request: Request) {
       success: true,
       dryingTrails: dryingCount,
       postsFetched: posts.length,
-      postsStored: stored,
+      postsStored: stored.size,
       postsClassified: classified,
       trailsVerified: verifications.length > 0 ? verifications : undefined,
       classificationErrors: classificationErrors.length > 0 ? classificationErrors : undefined,
