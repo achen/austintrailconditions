@@ -76,23 +76,54 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
       // Skip if status is already the same
       if (currentStatus === newStatus) continue;
 
-      // Guard against stale "wet" reports: if there's been no rain in the
-      // last 7 days for this trail, a "wet" classification is almost certainly
-      // from an outdated post (e.g. extension scraped an old post with a
-      // fallback timestamp of "now"). Skip it.
+      // Guard against stale "wet" reports: if there's been no rain within
+      // this trail's max drying window, a "wet" classification is almost
+      // certainly from an outdated post. Skip it.
+      // If rain IS recent but drying took longer than max_drying_days,
+      // adjust max_drying_days upward to match reality.
       if (classification === 'wet') {
+        const trailConfig = await sql`
+          SELECT max_drying_days FROM trails WHERE id = ${trailId}
+        `;
+        const maxDays = Number(trailConfig.rows[0]?.max_drying_days ?? 7);
         const recentRain = await sql`
-          SELECT 1 FROM rain_events
+          SELECT end_timestamp FROM rain_events
           WHERE trail_id = ${trailId}
-            AND (is_active = true OR end_timestamp > now() - interval '7 days')
+            AND is_active = false
+            AND end_timestamp IS NOT NULL
+          ORDER BY end_timestamp DESC
           LIMIT 1
         `;
-        if (recentRain.rows.length === 0) {
+        const activeRain = await sql`
+          SELECT 1 FROM rain_events
+          WHERE trail_id = ${trailId} AND is_active = true
+          LIMIT 1
+        `;
+
+        if (activeRain.rows.length === 0 && recentRain.rows.length > 0) {
+          const rainEndTime = new Date(recentRain.rows[0].end_timestamp as string);
+          const daysSinceRainEnd = (postTimestamp.getTime() - rainEndTime.getTime()) / (1000 * 60 * 60 * 24);
+
+          if (daysSinceRainEnd > maxDays) {
+            // Trail is still wet beyond max_drying_days — bump it up
+            const newMaxDays = Math.ceil(daysSinceRainEnd);
+            await sql`
+              UPDATE trails
+              SET max_drying_days = ${newMaxDays}, updated_at = now()
+              WHERE id = ${trailId}
+            `;
+            console.log(
+              `Adjusted max_drying_days for "${trail.name as string}": ${maxDays} → ${newMaxDays} (wet report ${Math.round(daysSinceRainEnd)}d after rain)`
+            );
+          }
+        } else if (activeRain.rows.length === 0) {
+          // No rain at all — stale report
           console.log(
-            `Skipping stale "wet" report for "${trail.name as string}" (post ${postId}) — no rain in last 7 days`
+            `Skipping stale "wet" report for "${trail.name as string}" (post ${postId}) — no rain events found`
           );
           continue;
         }
+        // If rain is active, the wet report makes sense — proceed normally
       }
 
       // Update trail status
@@ -144,4 +175,32 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
   }
 
   return results;
+}
+/**
+ * Expire stale "Verified Not Rideable" statuses.
+ *
+ * If a trail is marked "Verified Not Rideable" but there's been no rain
+ * within its max_drying_days window, the verification is stale.
+ * Transition it to "Probably Rideable" so the dashboard reflects reality.
+ */
+export async function expireStaleVerifications(): Promise<string[]> {
+  const result = await sql`
+    UPDATE trails
+    SET condition_status = 'Probably Rideable', updated_at = now()
+    WHERE condition_status = 'Verified Not Rideable'
+      AND is_archived = false
+      AND NOT EXISTS (
+        SELECT 1 FROM rain_events
+        WHERE trail_id = trails.id
+          AND (is_active = true
+               OR end_timestamp > now() - (trails.max_drying_days || ' days')::interval)
+      )
+    RETURNING name
+  `;
+
+  const expired = result.rows.map(r => r.name as string);
+  if (expired.length > 0) {
+    console.log(`Expired stale "Verified Not Rideable" for: ${expired.join(', ')}`);
+  }
+  return expired;
 }

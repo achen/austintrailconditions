@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { validateConfig } from '@/services/config-validator';
 import { updatePredictions, recordActualOutcome } from '@/services/prediction-engine';
 import { listActive } from '@/services/trail-service';
+import { expireStaleVerifications } from '@/services/trail-verifier';
 import { notifyCronFailure } from '@/services/notification-service';
 import { sql } from '@/lib/db';
 
