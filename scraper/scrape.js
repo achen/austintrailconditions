@@ -264,10 +264,7 @@ async function scrape() {
 
     // Debug mode: dump first article HTML and exit (before sort)
     if (process.env.DEBUG_FIRST === 'true') {
-      log('DEBUG_FIRST mode — small scroll to trigger post load...');
-      // Small scroll to get past the group header into the feed
-      await page.evaluate(() => window.scrollBy(0, 400));
-      await randomDelay(3000, 5000);
+      log('DEBUG_FIRST mode — checking for posts without scrolling...');
 
       // Wait for a real article (one with div[dir="auto"])
       await page.waitForFunction(() => {
