@@ -246,14 +246,16 @@ async function extractPostFromHtml(postId, html) {
         model: 'gpt-5.2',
         messages: [
           { role: 'system', content: EXTRACTION_PROMPT },
-          { role: 'user', content: html },
+          { role: 'user', content: html.slice(0, 100000) }, // cap at ~100K chars to stay within context
         ],
         temperature: 0,
         max_tokens: 2000,
+        response_format: { type: 'json_object' },
       }),
     });
     if (!res.ok) {
-      log(`OpenAI error ${res.status} for ${postId}`);
+      const errBody = await res.text().catch(() => '');
+      log(`OpenAI error ${res.status} for ${postId}: ${errBody.slice(0, 300)}`);
       return null;
     }
     const data = await res.json();
