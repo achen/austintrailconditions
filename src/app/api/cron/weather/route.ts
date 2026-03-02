@@ -5,10 +5,10 @@ import {
   storeObservations,
   getActiveStationIds,
   shouldPollFrequently,
+  isRainForecast,
 } from '@/services/weather-collector';
 import { evaluate, checkForRainEnd } from '@/services/rain-detector';
-import { notifyStationsDown, notifyCronFailure, notifyRainDetected } from '@/services/notification-service';
-import { autoReplaceOfflineStations, crossValidatePrecipitation } from '@/services/station-health';
+import { notifyStationsDown, notifyCronFailure, notifyRainDetected, notifyForecastCheck } from '@/services/notification-service';
 import { sql } from '@/lib/db';
 import { WeatherObservation } from '@/types';
 
@@ -16,72 +16,107 @@ import { WeatherObservation } from '@/types';
  * GET /api/cron/weather
  *
  * Vercel Cron endpoint for weather data collection.
- * - Validates CRON_SECRET authorization
- * - Adaptive polling: skips if no active rain/drying and last poll < 24h ago
- * - Fetches observations for each active station
- * - Stores observations and runs rain detection
  *
- * Requirements: 1.1, 1.3, 1.4, 1.6, 3.1
+ * Polling strategy (conserves WU API calls):
+ * 1. If active rain or trails drying → poll all stations hourly
+ * 2. Otherwise → check forecast (1 API call). If rain expected → poll stations
+ * 3. If no rain expected → poll stations once at midday for data points
  */
 export async function GET(request: Request) {
-  // 1. Cron authorization check
   const authHeader = request.headers.get('authorization');
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    // 2. Validate configuration
     const config = validateConfig();
-
-    // 3. Adaptive polling check (Req 1.4)
     const frequentPolling = await shouldPollFrequently();
 
     if (!frequentPolling) {
-      // Daily polling mode: only fetch around midday CT (12-1pm CT = 17-18 UTC)
-      // to capture peak temperature/conditions. Skip all other hours.
-      const nowUtc = new Date();
-      const hourUtc = nowUtc.getUTCHours();
-      const isMidday = hourUtc === 17 || hourUtc === 18; // 12-1pm CT
+      // No active rain or drying trails — check forecast once per day
+      // to decide whether to start hourly station polling.
+      const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-      const lastPollResult = await sql`
-        SELECT MAX(created_at) AS last_poll
-        FROM weather_observations
+      // Check if we already have today's forecast cached
+      const cachedForecast = await sql`
+        SELECT rain_expected FROM weather_forecasts
+        WHERE forecast_date = ${todayStr}
+        LIMIT 1
       `;
-      const lastPoll = lastPollResult.rows[0]?.last_poll;
-      const hoursSinceLastPoll = lastPoll
-        ? (Date.now() - new Date(lastPoll as string).getTime()) / (1000 * 60 * 60)
-        : Infinity;
 
-      // Skip unless it's midday or it's been over 24h since last poll
-      if (hoursSinceLastPoll < 20 && !isMidday) {
-        return NextResponse.json({
-          skipped: true,
-          reason: 'No active rain/drying; waiting for midday poll window',
-          hoursSinceLastPoll: Math.round(hoursSinceLastPoll * 10) / 10,
-        });
+      let rainExpected: boolean;
+
+      if (cachedForecast.rows.length > 0) {
+        // Use cached forecast — no API call
+        rainExpected = cachedForecast.rows[0].rain_expected as boolean;
+      } else {
+        // Fetch forecast (1 API call per day)
+        const forecast = await isRainForecast(config.weatherUnderground.apiKey);
+        rainExpected = forecast.rainExpected;
+        console.log(`Forecast check: ${forecast.details}`);
+
+        // Cache it
+        await sql`
+          INSERT INTO weather_forecasts (forecast_date, rain_expected, max_chance, details)
+          VALUES (${todayStr}, ${rainExpected}, ${forecast.maxChance}, ${forecast.details})
+          ON CONFLICT (forecast_date) DO NOTHING
+        `;
+
+        // Send daily forecast email
+        const trailStatusResult = await sql`
+          SELECT name, condition_status FROM trails
+          WHERE is_archived = false ORDER BY name ASC
+        `;
+        const trailStatuses = trailStatusResult.rows.map(r => ({
+          name: r.name as string,
+          status: r.condition_status as string,
+        }));
+        await notifyForecastCheck(
+          rainExpected, forecast.maxChance, forecast.details, trailStatuses,
+          rainExpected ? 'hourly' : 'midday-only'
+        );
       }
 
-      if (hoursSinceLastPoll < 20 && isMidday) {
-        return NextResponse.json({
-          skipped: true,
-          reason: 'No active rain/drying; already polled today',
-          hoursSinceLastPoll: Math.round(hoursSinceLastPoll * 10) / 10,
-        });
+      if (rainExpected) {
+        // Rain in forecast — poll stations this hour
+        console.log('Rain forecast for today/tomorrow, polling stations');
+      } else {
+        // No rain expected — only poll once at midday CT for data points
+        const nowUtc = new Date();
+        const hourUtc = nowUtc.getUTCHours();
+        const isMidday = hourUtc === 17 || hourUtc === 18; // 12-1pm CT
+
+        const lastPollResult = await sql`
+          SELECT MAX(created_at) AS last_poll FROM weather_observations
+        `;
+        const lastPoll = lastPollResult.rows[0]?.last_poll;
+        const hoursSinceLastPoll = lastPoll
+          ? (Date.now() - new Date(lastPoll as string).getTime()) / (1000 * 60 * 60)
+          : Infinity;
+
+        if (hoursSinceLastPoll < 20) {
+          return NextResponse.json({
+            skipped: true,
+            reason: 'No rain forecast; already polled today',
+            hoursSinceLastPoll: Math.round(hoursSinceLastPoll * 10) / 10,
+          });
+        }
+
+        if (!isMidday && hoursSinceLastPoll < 30) {
+          return NextResponse.json({
+            skipped: true,
+            reason: 'No rain forecast; waiting for midday window',
+          });
+        }
       }
     }
 
-    // 4. Get unique active station IDs (Req 1.6)
+    // Poll individual stations
     const stationIds = await getActiveStationIds();
-
     if (stationIds.length === 0) {
-      return NextResponse.json({
-        skipped: true,
-        reason: 'No active stations found',
-      });
+      return NextResponse.json({ skipped: true, reason: 'No active stations found' });
     }
 
-    // 5. Fetch and store observations for each station (Req 1.1, 1.3)
     const allObservations: WeatherObservation[] = [];
     let totalStored = 0;
     const errors: string[] = [];
@@ -90,84 +125,33 @@ export async function GET(request: Request) {
       try {
         const observations = await fetchObservations(stationId, config.weatherUnderground.apiKey);
         allObservations.push(...observations);
-
         const stored = await storeObservations(observations);
         totalStored += stored;
       } catch (err) {
-        // Log and continue — retry on next cron run (Req 1.3)
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`Failed to fetch/store observations for station ${stationId}: ${message}`);
+        console.error(`Failed to fetch/store for ${stationId}: ${message}`);
         errors.push(`${stationId}: ${message}`);
       }
     }
 
-    // 6. Track offline stations for notification, but skip auto-replace
-    // to conserve API calls (WU free tier: 1,500/day).
-    // Auto-replace can be triggered manually or enabled via WEATHER_AUTO_REPLACE=true.
     const offlineStations = stationIds.filter(
       (sid) => !allObservations.some((o) => o.stationId === sid)
     );
-    let replacements: Awaited<ReturnType<typeof autoReplaceOfflineStations>> = [];
-    if (offlineStations.length > 0 && process.env.WEATHER_AUTO_REPLACE === 'true') {
-      replacements = await autoReplaceOfflineStations(config.weatherUnderground.apiKey);
-      if (replacements.length > 0) {
-        console.log(`Replaced ${replacements.length} offline station(s):`, replacements);
-        for (const r of replacements) {
-          try {
-            const obs = await fetchObservations(r.newStation, config.weatherUnderground.apiKey);
-            allObservations.push(...obs);
-            const stored = await storeObservations(obs);
-            totalStored += stored;
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            errors.push(`${r.newStation} (replacement): ${message}`);
-          }
-        }
-      }
-    }
 
-    // 7. Cross-validation disabled by default to conserve API calls.
-    // Enable via WEATHER_CROSS_VALIDATE=true when needed.
-    if (process.env.WEATHER_CROSS_VALIDATE === 'true') {
-      const trailsWithCoords = await sql`
-        SELECT primary_station_id, latitude, longitude FROM trails
-        WHERE is_archived = false AND updates_enabled = true
-          AND latitude IS NOT NULL AND longitude IS NOT NULL
-      `;
-      for (const obs of allObservations) {
-        const trail = trailsWithCoords.rows.find(
-          (t) => t.primary_station_id === obs.stationId
-        );
-        if (!trail) continue;
-        const lat = parseFloat(trail.latitude as string);
-        const lon = parseFloat(trail.longitude as string);
-        const result = await crossValidatePrecipitation(
-          obs.stationId, obs.precipitationIn, lat, lon, config.weatherUnderground.apiKey
-        );
-        if (result.adjusted) {
-          obs.precipitationIn = result.precipIn;
-        }
-      }
-    }
-
-    // 8. Run rain detection on all observations (Req 3.1)
+    // Run rain detection
     const rainEvents = await evaluate(allObservations);
-
-    // 9. Check for rain end (60-min dry gap)
     const endedEvents = await checkForRainEnd();
 
-    // 10. Send notifications
-    if (offlineStations.length > stationIds.length * 0.5) {
+    // Notify on any offline stations
+    if (offlineStations.length > 0) {
       await notifyStationsDown(offlineStations, stationIds.length);
     }
 
     if (rainEvents.length > 0) {
       const totalPrecip = allObservations.reduce((sum, o) => sum + o.precipitationIn, 0);
-      // Include current trail statuses in the rain notification
       const trailStatusResult = await sql`
         SELECT name, condition_status FROM trails
-        WHERE is_archived = false
-        ORDER BY name ASC
+        WHERE is_archived = false ORDER BY name ASC
       `;
       const trailStatuses = trailStatusResult.rows.map(r => ({
         name: r.name as string,
@@ -181,7 +165,7 @@ export async function GET(request: Request) {
       stationsPolled: stationIds.length,
       observationsFetched: allObservations.length,
       observationsStored: totalStored,
-      stationsReplaced: replacements.length > 0 ? replacements : undefined,
+      offlineStations: offlineStations.length > 0 ? offlineStations : undefined,
       rainEventsCreatedOrUpdated: rainEvents.length,
       rainEventsEnded: endedEvents.length,
       errors: errors.length > 0 ? errors : undefined,

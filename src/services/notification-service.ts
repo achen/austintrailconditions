@@ -117,4 +117,37 @@ export async function notifyCookieExpired(): Promise<boolean> {
      <p style="color:#888;font-size:12px">Cookies typically expire every ~90 days.</p>`
   );
 }
+/**
+ * Daily forecast check notification — shows forecast result and current trail statuses.
+ */
+export async function notifyForecastCheck(
+  rainExpected: boolean,
+  maxChance: number,
+  details: string,
+  trailStatuses: Array<{ name: string; status: string }>,
+  mode: string
+): Promise<boolean> {
+  const emoji = rainExpected ? '🌧️' : '☀️';
+  const modeLabel = rainExpected ? 'Hourly station polling activated' : `Midday-only polling (${mode})`;
+
+  const trailTable = trailStatuses.length > 0
+    ? `<table style="border-collapse:collapse;font-size:14px">
+         <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Trail</th><th style="padding:4px 8px;text-align:left">Status</th></tr>
+         ${trailStatuses.map(t => `<tr><td style="padding:4px 8px">${t.name}</td><td style="padding:4px 8px">${t.status}</td></tr>`).join('')}
+       </table>`
+    : '';
+
+  return sendAlert(
+    `${emoji} Forecast: ${rainExpected ? 'Rain expected' : 'No rain'} (${maxChance >= 0 ? maxChance + '%' : 'unknown'})`,
+    `<h3>${emoji} Daily Forecast Check</h3>
+     <p><strong>Rain expected:</strong> ${rainExpected ? 'Yes' : 'No'}</p>
+     <p><strong>Max precip chance:</strong> ${maxChance >= 0 ? maxChance + '%' : 'API error'}</p>
+     <p><strong>Details:</strong> ${details}</p>
+     <p><strong>Mode:</strong> ${modeLabel}</p>
+     <h3>Current Trail Statuses</h3>
+     ${trailTable}`
+  );
+}
+
+
 

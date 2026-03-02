@@ -181,3 +181,49 @@ export async function shouldPollFrequently(): Promise<boolean> {
 
   return !!dryingTrailsResult.rows[0]?.has_drying_trails;
 }
+/**
+ * Check the WU 5-day forecast for Austin to see if rain is expected today or tomorrow.
+ * Returns true if precipitation chance >= 30% in the next 2 days.
+ * This is a single API call that replaces polling 19 individual stations.
+ */
+export async function isRainForecast(
+  apiKey: string,
+  baseUrl: string = process.env.WEATHER_API_BASE_URL || 'https://api.weather.com'
+): Promise<{ rainExpected: boolean; maxChance: number; details: string }> {
+  // Austin, TX geocode
+  const url = `${baseUrl}/v3/wx/forecast/daily/5day?geocode=30.27,-97.74&format=json&units=e&language=en-US&apiKey=${encodeURIComponent(apiKey)}`;
+
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) {
+      console.error(`Forecast API error: ${response.status}`);
+      // On error, assume rain possible so we don't miss events
+      return { rainExpected: true, maxChance: -1, details: `API error ${response.status}` };
+    }
+
+    const data = await response.json();
+    const dayParts = data.daypart?.[0];
+    if (!dayParts?.precipChance) {
+      return { rainExpected: true, maxChance: -1, details: 'No forecast data' };
+    }
+
+    // Check today and tomorrow (first 4 dayparts: today day/night, tomorrow day/night)
+    const chances: number[] = [];
+    for (let i = 0; i < 4 && i < dayParts.precipChance.length; i++) {
+      const chance = dayParts.precipChance[i];
+      if (chance !== null) chances.push(chance);
+    }
+
+    const maxChance = chances.length > 0 ? Math.max(...chances) : 0;
+    const rainExpected = maxChance >= 30;
+    const details = `Next 2 days max precip chance: ${maxChance}%`;
+
+    return { rainExpected, maxChance, details };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Forecast check failed: ${msg}`);
+    // Fail open — assume rain possible
+    return { rainExpected: true, maxChance: -1, details: `Error: ${msg}` };
+  }
+}
+
