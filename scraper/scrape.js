@@ -262,6 +262,48 @@ async function scrape() {
       process.exit(2);
     }
 
+    // Debug mode: dump first article HTML and exit (before sort)
+    if (process.env.DEBUG_FIRST === 'true') {
+      log('DEBUG_FIRST mode — waiting for feed...');
+      try { await page.waitForSelector('div[role="feed"]', { timeout: 15000 }); } catch {}
+      await randomDelay(3000, 5000);
+
+      // Dump all article info
+      const debugInfo = await page.evaluate(() => {
+        const articles = document.querySelectorAll('div[role="article"]');
+        const info = [];
+        for (const article of articles) {
+          const isNested = article.parentElement && article.parentElement.closest('div[role="article"]');
+          const hasDirAuto = !!article.querySelector('div[dir="auto"]');
+          const hasLoading = !!article.querySelector('[aria-label="Loading..."]');
+          const textLen = (article.textContent || '').length;
+          const htmlLen = article.innerHTML.length;
+          info.push({ isNested: !!isNested, hasDirAuto, hasLoading, textLen, htmlLen });
+        }
+        return info;
+      });
+      log(`Found ${debugInfo.length} total article elements:`);
+      debugInfo.forEach((a, i) => log(`  #${i}: nested=${a.isNested} hasDirAuto=${a.hasDirAuto} hasLoading=${a.hasLoading} text=${a.textLen}chars html=${a.htmlLen}chars`));
+
+      // Print first non-nested article HTML regardless of content
+      const firstHtml = await page.evaluate(() => {
+        for (const article of document.querySelectorAll('div[role="article"]')) {
+          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+          return article.outerHTML;
+        }
+        return null;
+      });
+      if (firstHtml) {
+        console.log('\n--- FIRST ARTICLE HTML ---');
+        console.log(firstHtml);
+        console.log('--- END ---');
+      } else {
+        log('No top-level articles found!');
+      }
+      await browser.close();
+      process.exit(0);
+    }
+
     // Sort by "Recent activity"
     log('Switching to Recent activity sort...');
     try {
@@ -305,27 +347,6 @@ async function scrape() {
       return false;
     }, { timeout: 20000 }).catch(() => log('No loaded articles found after 20s, continuing anyway.'));
     await randomDelay(1000, 2000);
-
-    // Debug mode: dump first article HTML and exit
-    if (process.env.DEBUG_FIRST === 'true') {
-      log('DEBUG_FIRST mode — dumping first real article HTML...');
-      const firstHtml = await page.evaluate(() => {
-        for (const article of document.querySelectorAll('div[role="article"]')) {
-          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-          // Skip skeletons — real posts have div[dir="auto"] with text
-          if (!article.querySelector('div[dir="auto"]')) continue;
-          return article.outerHTML;
-        }
-        return null;
-      });
-      if (firstHtml) {
-        console.log(firstHtml);
-      } else {
-        log('No articles found on page!');
-      }
-      await browser.close();
-      process.exit(0);
-    }
 
     // Switch comment sort to "Newest"
     async function sortCommentsNewest() {
