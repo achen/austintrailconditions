@@ -481,8 +481,42 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
             }
           }
 
+          // Timestamp: look for links with aria-label containing a date, or relative time text
+          let timestamp = null;
+          // FB puts timestamps in <a> tags with aria-label like "1 day ago" or an absolute date
+          const timeLinks = article.querySelectorAll('a[role="link"]');
+          for (const link of timeLinks) {
+            const aria = (link.getAttribute('aria-label') || '').trim();
+            const href = link.getAttribute('href') || '';
+            // Comment permalink links contain the comment ID and have time-like aria labels
+            if (href.includes('comment_id=') || href.includes('reply_comment_id=')) {
+              if (aria) timestamp = aria;
+              break;
+            }
+          }
+          // Fallback: look for relative time spans like "1d", "2h", "3w"
+          if (!timestamp) {
+            const spans = article.querySelectorAll('span');
+            for (const span of spans) {
+              const t = (span.textContent || '').trim();
+              if (/^\d+[hmdwy]$/.test(t)) {
+                timestamp = t;
+                break;
+              }
+            }
+          }
+
+          // Comment ID: extract from permalink href if available
+          let commentId = null;
+          const permalinks = article.querySelectorAll('a[href*="comment_id="]');
+          if (permalinks.length > 0) {
+            const href = permalinks[0].getAttribute('href') || '';
+            const match = href.match(/comment_id=(\d+)/);
+            if (match) commentId = match[1];
+          }
+
           if (text) {
-            results.push({ authorName: author, commentText: text });
+            results.push({ commentId, authorName: author, commentText: text, timestamp });
           }
         }
         return results;
@@ -495,13 +529,13 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
           const fp = c.commentText.slice(0, 60).toLowerCase();
           if (!seen.has(fp)) {
             seen.add(fp);
-            deduped.push({ commentId: null, authorName: c.authorName, commentText: c.commentText });
+            deduped.push({ commentId: c.commentId || null, authorName: c.authorName, commentText: c.commentText, timestamp: c.timestamp || null });
           }
         }
         commentsByPost.set(post.postId, deduped);
         log(`    Found ${deduped.length} comment(s)`);
         for (const c of deduped) {
-          log(`      💬 ${c.authorName}: ${c.commentText.slice(0, 100)}`);
+          log(`      💬 [${c.commentId || '?'}] ${c.authorName} (${c.timestamp || '?'}): ${c.commentText.slice(0, 100)}`);
         }
       } else {
         log(`    No comments found`);
