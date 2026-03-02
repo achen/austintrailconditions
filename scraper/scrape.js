@@ -264,12 +264,9 @@ async function scrape() {
 
     // Debug mode: dump first article HTML and exit (before sort)
     if (process.env.DEBUG_FIRST === 'true') {
-      log('DEBUG_FIRST mode — scrolling to trigger post load...');
-      // Scroll down to trigger lazy loading
-      await page.evaluate(() => window.scrollBy(0, 800));
-      await randomDelay(3000, 5000);
-      // Scroll again
-      await page.evaluate(() => window.scrollBy(0, 800));
+      log('DEBUG_FIRST mode — small scroll to trigger post load...');
+      // Small scroll to get past the group header into the feed
+      await page.evaluate(() => window.scrollBy(0, 400));
       await randomDelay(3000, 5000);
 
       // Wait for a real article (one with div[dir="auto"])
@@ -487,7 +484,7 @@ async function scrape() {
 
       if (foundKnown || round >= MAX_SCROLLS) break;
 
-      await page.evaluate((amt) => window.scrollBy(0, amt), 600 + Math.floor(Math.random() * 800));
+      await page.evaluate((amt) => window.scrollBy(0, amt), 300 + Math.floor(Math.random() * 400));
       scrollCount++;
       log(`Scroll ${scrollCount}/${MAX_SCROLLS}...`);
       await randomDelay(2000, 4000);
