@@ -7,9 +7,11 @@ import { TrailReport } from '@/types';
 
 interface IngestPost {
   postId: string;
+  parentPostId?: string;
   authorName: string;
   postText: string;
   timestamp: string;
+  isComment?: boolean;
 }
 
 /**
@@ -34,6 +36,8 @@ export async function POST(request: Request) {
 
     const posts: TrailReport[] = rawPosts.map((p) => ({
       postId: p.postId,
+      parentPostId: p.parentPostId || null,
+      isComment: p.isComment || false,
       authorName: p.authorName || 'Unknown',
       postText: p.postText,
       timestamp: new Date(p.timestamp),

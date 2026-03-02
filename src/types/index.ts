@@ -58,6 +58,8 @@ export interface RainEvent {
 
 export interface TrailReport {
   postId: string;
+  parentPostId?: string | null;
+  isComment?: boolean;
   authorName: string;
   postText: string;
   timestamp: Date;

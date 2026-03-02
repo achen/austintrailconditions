@@ -66,10 +66,12 @@ export async function storePosts(posts: TrailReport[]): Promise<number> {
   for (const post of posts) {
     const result = await sql`
       INSERT INTO trail_reports (
-        post_id, author_name, post_text, timestamp,
+        post_id, parent_post_id, is_comment, author_name, post_text, timestamp,
         trail_references, classification, confidence_score, flagged_for_review
       ) VALUES (
         ${post.postId},
+        ${post.parentPostId || null},
+        ${post.isComment || false},
         ${post.authorName},
         ${post.postText},
         ${post.timestamp.toISOString()},
