@@ -264,16 +264,18 @@ async function scrape() {
 
     // Debug mode: dump first article HTML and exit (before sort)
     if (process.env.DEBUG_FIRST === 'true') {
-      log('DEBUG_FIRST mode — checking for posts without scrolling...');
+      log('DEBUG_FIRST mode — waiting for loading skeletons to disappear...');
 
-      // Wait for a real article (one with div[dir="auto"])
+      // Wait for loading skeletons to disappear (Facebook replaces them with real posts)
+      await page.waitForSelector('[aria-label="Loading..."]', { hidden: true, timeout: 20000 })
+        .then(() => log('Loading skeletons gone.'))
+        .catch(() => log('Loading skeletons still present after 20s, continuing anyway.'));
+
+      // Then confirm at least one article has real content
       await page.waitForFunction(() => {
-        for (const article of document.querySelectorAll('div[role="article"]')) {
-          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-          if (article.querySelector('div[dir="auto"]')) return true;
-        }
-        return false;
-      }, { timeout: 15000 }).catch(() => log('Still no real articles after waiting.'));
+        const article = document.querySelector('[role="article"]');
+        return article && article.innerText.trim().length > 0;
+      }, { timeout: 10000 }).catch(() => log('Still no article with text after waiting.'));
 
       // Dump all article info
       const debugInfo = await page.evaluate(() => {
@@ -344,18 +346,18 @@ async function scrape() {
     // Wait for feed
     try { await page.waitForSelector('div[role="feed"]', { timeout: 15000 }); }
     catch { try { await page.waitForSelector('div[role="article"]', { timeout: 10000 }); } catch {} }
-    await randomDelay(2000, 3000);
 
-    // Wait for posts to finish loading
+    // Wait for loading skeletons to disappear
     log('Waiting for posts to load...');
+    await page.waitForSelector('[aria-label="Loading..."]', { hidden: true, timeout: 20000 })
+      .then(() => log('Loading skeletons gone.'))
+      .catch(() => log('Loading skeletons still present after 20s, continuing anyway.'));
+
+    // Confirm at least one article has real content
     await page.waitForFunction(() => {
-      // Wait until at least one article has actual content (div[dir="auto"])
-      for (const article of document.querySelectorAll('div[role="article"]')) {
-        if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-        if (article.querySelector('div[dir="auto"]')) return true;
-      }
-      return false;
-    }, { timeout: 20000 }).catch(() => log('No loaded articles found after 20s, continuing anyway.'));
+      const article = document.querySelector('[role="article"]');
+      return article && article.innerText.trim().length > 0;
+    }, { timeout: 10000 }).catch(() => log('No article with text found after waiting.'));
     await randomDelay(1000, 2000);
 
     // Switch comment sort to "Newest"
