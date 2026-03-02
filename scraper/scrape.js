@@ -419,15 +419,19 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
             if (name && name.length > 1 && name.length < 80) author = name;
           }
 
-          // Comment text
+          // Comment text: concatenate all div[dir="auto"] text within the article
           let text = '';
           const textDivs = article.querySelectorAll('div[dir="auto"]');
+          const textParts = [];
           for (const div of textDivs) {
             const t = (div.textContent || '').trim();
             if (t.length >= 2 && t !== author && !t.match(/^\d+[hmdwy]$/)) {
-              text = t;
-              break;
+              textParts.push(t);
             }
+          }
+          // Use the longest text found (FB nests divs, so child text is duplicated in parent)
+          if (textParts.length > 0) {
+            text = textParts.reduce((a, b) => a.length >= b.length ? a : b, '');
           }
 
           // Timestamp from comment permalink aria-label or relative time
@@ -481,7 +485,7 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
           commentsByPost.set(post.postId, deduped);
           log(`    Found ${deduped.length} comment(s) (${comments.length} total articles)`);
           for (const c of deduped) {
-            log(`      💬 [${c.commentId || '?'}] ${c.authorName} (${c.timestamp || '?'}): ${c.commentText.slice(0, 100)}`);
+            log(`      💬 [${c.commentId || '?'}] ${c.authorName} (${c.timestamp || '?'}): ${c.commentText.slice(0, 200)}`);
           }
 
           // Check against DB if post + all comments are already stored
