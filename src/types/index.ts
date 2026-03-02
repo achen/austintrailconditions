@@ -25,6 +25,7 @@ export interface Trail {
   updatesEnabled: boolean;
   isArchived: boolean;
   conditionStatus: ConditionStatus;
+  aliases: string[];
   createdAt: Date;
   updatedAt: Date;
 }

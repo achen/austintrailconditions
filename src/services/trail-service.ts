@@ -15,6 +15,7 @@ function rowToTrail(row: Record<string, unknown>): Trail {
     updatesEnabled: row.updates_enabled as boolean,
     isArchived: row.is_archived as boolean,
     conditionStatus: row.condition_status as Trail['conditionStatus'],
+    aliases: (row.aliases as string[]) ?? [],
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
   };
