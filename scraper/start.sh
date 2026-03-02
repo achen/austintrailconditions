@@ -10,7 +10,7 @@ if [ -z "$NODE_BIN" ]; then
   exit 1
 fi
 
-CRON_LINE="0 6,8,10,12,14,16,18,20 * * * export DISPLAY=:0 && cd $SCRIPT_DIR && $NODE_BIN scrape.js >> $SCRIPT_DIR/scrape.log 2>&1"
+CRON_LINE="0 6,8,10,12,14,16,18,20 * * * export DISPLAY=:0 && cd $SCRIPT_DIR && HEADLESS=false $NODE_BIN scrape.js >> $SCRIPT_DIR/scrape.log 2>&1"
 
 # Check if already installed
 if crontab -l 2>/dev/null | grep -qF "scrape.js"; then
