@@ -39,7 +39,14 @@ export default async function DashboardPage() {
               const isRideable = trail.condition_status === 'Verified Rideable' || trail.condition_status === 'Probably Rideable';
               const rowBg = isRideable ? 'bg-green-600 text-white' : 'bg-red-600 text-white';
               const isDrying = trail.condition_status === 'Probably Not Rideable' || trail.condition_status === 'Probably Rideable';
-              const statusLabel = trail.condition_status === 'Closed' ? 'Closed' : trail.condition_status.replace('Verified ', '').replace('Probably ', 'Predicted ');
+              const statusLabels: Record<string, string> = {
+                'Verified Rideable': 'Observed Dry',
+                'Verified Not Rideable': 'Observed Wet',
+                'Probably Rideable': 'Predicted Dry',
+                'Probably Not Rideable': 'Predicted Wet',
+                'Closed': 'Closed',
+              };
+              const statusLabel = statusLabels[trail.condition_status] ?? trail.condition_status;
 
               return (
                 <li key={trail.id} className={`px-3 py-2 ${rowBg}`}>

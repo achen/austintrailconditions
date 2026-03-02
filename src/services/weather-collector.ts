@@ -146,6 +146,17 @@ export async function getActiveStationIds(): Promise<string[]> {
  * - Daily when no active rain events and all trails are stable
  * - Hourly when rain events are active or trails are drying
  */
+export /**
+ * Determine if the system should poll frequently (hourly) or infrequently (daily).
+ *
+ * Returns true only when rain is actively falling OR trails are still
+ * "Probably Not Rideable" (actually drying). "Probably Rideable" trails
+ * are nearly dry and don't need frequent weather updates.
+ *
+ * Adaptive polling per Requirement 1.4:
+ * - Daily around midday when no active rain and no actively drying trails
+ * - Hourly when rain is active or trails are in "Probably Not Rideable"
+ */
 export async function shouldPollFrequently(): Promise<boolean> {
   // Check for active rain events
   const activeRainResult = await sql`
@@ -158,13 +169,13 @@ export async function shouldPollFrequently(): Promise<boolean> {
     return true;
   }
 
-  // Check for trails in drying states
+  // Only poll frequently for trails that are actively drying (not rideable yet)
   const dryingTrailsResult = await sql`
     SELECT EXISTS (
       SELECT 1 FROM trails
       WHERE is_archived = false
         AND updates_enabled = true
-        AND condition_status IN ('Probably Not Rideable', 'Probably Rideable')
+        AND condition_status = 'Probably Not Rideable'
     ) AS has_drying_trails
   `;
 

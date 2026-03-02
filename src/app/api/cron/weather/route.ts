@@ -38,24 +38,36 @@ export async function GET(request: Request) {
     const frequentPolling = await shouldPollFrequently();
 
     if (!frequentPolling) {
-      // Check if last poll was < 24 hours ago — skip if so
+      // Daily polling mode: only fetch around midday CT (12-1pm CT = 17-18 UTC)
+      // to capture peak temperature/conditions. Skip all other hours.
+      const nowUtc = new Date();
+      const hourUtc = nowUtc.getUTCHours();
+      const isMidday = hourUtc === 17 || hourUtc === 18; // 12-1pm CT
+
       const lastPollResult = await sql`
         SELECT MAX(created_at) AS last_poll
         FROM weather_observations
       `;
       const lastPoll = lastPollResult.rows[0]?.last_poll;
+      const hoursSinceLastPoll = lastPoll
+        ? (Date.now() - new Date(lastPoll as string).getTime()) / (1000 * 60 * 60)
+        : Infinity;
 
-      if (lastPoll) {
-        const hoursSinceLastPoll =
-          (Date.now() - new Date(lastPoll as string).getTime()) / (1000 * 60 * 60);
+      // Skip unless it's midday or it's been over 24h since last poll
+      if (hoursSinceLastPoll < 20 && !isMidday) {
+        return NextResponse.json({
+          skipped: true,
+          reason: 'No active rain/drying; waiting for midday poll window',
+          hoursSinceLastPoll: Math.round(hoursSinceLastPoll * 10) / 10,
+        });
+      }
 
-        if (hoursSinceLastPoll < 24) {
-          return NextResponse.json({
-            skipped: true,
-            reason: 'No active rain events or drying trails; last poll was less than 24 hours ago',
-            hoursSinceLastPoll: Math.round(hoursSinceLastPoll * 10) / 10,
-          });
-        }
+      if (hoursSinceLastPoll < 20 && isMidday) {
+        return NextResponse.json({
+          skipped: true,
+          reason: 'No active rain/drying; already polled today',
+          hoursSinceLastPoll: Math.round(hoursSinceLastPoll * 10) / 10,
+        });
       }
     }
 
