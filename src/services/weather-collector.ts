@@ -193,16 +193,17 @@ export async function isRainForecast(
       return { rainExpected: true, maxChance: -1, details: 'No forecast data' };
     }
 
-    // Check today and tomorrow (first 4 dayparts: today day/night, tomorrow day/night)
+    // Check today only (first 2 dayparts: today day and tonight)
+    // Don't start hourly polling for rain that's days away
     const chances: number[] = [];
-    for (let i = 0; i < 4 && i < dayParts.precipChance.length; i++) {
+    for (let i = 0; i < 2 && i < dayParts.precipChance.length; i++) {
       const chance = dayParts.precipChance[i];
       if (chance !== null) chances.push(chance);
     }
 
     const maxChance = chances.length > 0 ? Math.max(...chances) : 0;
     const rainExpected = maxChance >= 30;
-    const details = `Next 2 days max precip chance: ${maxChance}%`;
+    const details = `Today max precip chance: ${maxChance}%`;
 
     return { rainExpected, maxChance, details };
   } catch (err) {
