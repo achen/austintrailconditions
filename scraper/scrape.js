@@ -165,24 +165,28 @@ async function fetchTrailStatuses() {
 
 // ── AI extraction ────────────────────────────────────────────────────
 
-const EXTRACTION_PROMPT = `You are an HTML parser for Facebook group posts. Given the raw HTML of a single Facebook post (a div[role="article"]), extract:
+const EXTRACTION_PROMPT = `You are parsing the HTML of a single Facebook group post. The HTML is the innerHTML of a top-level div[role="article"].
 
-1. The main post text (what the author wrote)
-2. The post author's name
-3. Any unique post ID you can find (look for permalink URLs containing numeric IDs, e.g. /permalink/123456 or /posts/123456 or story_fbid=123456)
-4. All comments and their authors (comments are nested div[role="article"] elements)
-5. Any unique comment IDs (look for comment_id= in URLs)
+STRUCTURE:
+- The MAIN POST text and author are at the top level of this article
+- COMMENTS are inside NESTED div[role="article"] elements within this article
+- The main post text is NOT inside any nested div[role="article"]
 
-RULES:
-- Extract ONLY human-written content
-- Ignore UI text: "Like", "Reply", "Share", "Write a comment", "Most relevant", reaction counts, timestamps, etc.
-- Ignore image alt text and accessibility labels
-- If you can't find a unique ID, use null
+EXTRACT:
+1. postId: Look for permalink URLs like /permalink/123456, /posts/123456, or story_fbid=123456. Extract the numeric ID.
+2. postText: The main post content written by the original poster. This is NOT a comment. Look for div[dir="auto"] elements that are NOT inside nested div[role="article"] elements.
+3. authorName: The name of the person who wrote the main post (usually in a strong or heading element near the top).
+4. comments: Array of comments. Each comment is inside a nested div[role="article"]. Extract commentId (from comment_id= in URLs), authorName, and commentText.
+
+IMPORTANT:
+- Do NOT confuse comments with the main post. If you only find text inside nested articles, those are comments, not the post.
+- Ignore UI text: "Like", "Reply", "Share", "Write a comment", reaction counts, timestamps, "See more", "Most relevant", etc.
+- If the main post has no visible text (e.g. it's just a photo), set postText to null.
 
 Return JSON:
 {
   "postId": "numeric_id_or_null",
-  "postText": "the actual post content",
+  "postText": "the main post text or null",
   "authorName": "Author Name",
   "comments": [
     {"commentId": "id_or_null", "authorName": "Name", "commentText": "text"}
@@ -324,6 +328,18 @@ async function scrape() {
 
     for (let round = 0; round <= MAX_SCROLLS; round++) {
       await sortCommentsNewest();
+      await randomDelay(500, 1000);
+
+      // Click all "See more" links to expand truncated posts
+      await page.evaluate(async () => {
+        const links = document.querySelectorAll('div[role="button"], span[role="button"]');
+        for (const link of links) {
+          if ((link.textContent || '').trim().toLowerCase() === 'see more') {
+            link.click();
+            await new Promise(r => setTimeout(r, 300));
+          }
+        }
+      });
       await randomDelay(500, 1000);
 
       // Grab raw HTML of each top-level article
