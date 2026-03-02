@@ -327,35 +327,72 @@ async function scrape() {
     // ── Scroll + extract loop ──────────────────────────────────────
     const allPosts = [];
     const processedFingerprints = new Set();
+    const collectedFingerprints = []; // for saving to seen-posts
     let scrollCount = 0;
     let consecutiveKnown = 0;
     let foundKnown = false;
 
+    // Switch comment sort to "Newest" on all visible posts
+    async function sortCommentsNewest() {
+      const switched = await page.evaluate(async () => {
+        let count = 0;
+        // Find comment sort buttons — they say "Most relevant", "Newest", etc.
+        const buttons = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'));
+        for (const btn of buttons) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          if (text === 'most relevant' || text === 'all comments') {
+            btn.click();
+            count++;
+            await new Promise(r => setTimeout(r, 800));
+            // Click "Newest" in the dropdown
+            const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], span'));
+            for (const item of items) {
+              const t = (item.textContent || '').trim().toLowerCase();
+              if (t === 'newest' || t.startsWith('newest')) {
+                item.click();
+                await new Promise(r => setTimeout(r, 500));
+                break;
+              }
+            }
+          }
+        }
+        return count;
+      });
+      if (switched > 0) log(`Switched ${switched} comment section(s) to Newest.`);
+    }
+
     for (let round = 0; round <= MAX_SCROLLS; round++) {
-      // Extract all visible top-level posts and their comments
+      // Sort comments by newest before extracting
+      await sortCommentsNewest();
+      await randomDelay(500, 1000);
+
+      // Extract all visible top-level posts — grab cleaned HTML and let AI parse it
       const postData = await page.evaluate(() => {
         const articles = document.querySelectorAll('div[role="article"]');
         const results = [];
         for (const article of articles) {
+          // Skip nested articles (comments)
           if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
 
-          // Post text — clone the article, remove comment sub-articles, get text
-          let postText = '';
+          // Get rough textContent for fingerprinting (doesn't need to be perfect)
+          const roughText = (article.textContent || '').replace(/\s+/g, ' ').trim();
+          if (roughText.length < 10) continue;
+
+          // Clean the HTML: strip class, style, data-* attributes to reduce size
           const clone = article.cloneNode(true);
-          // Remove nested articles (comments) from the clone
-          for (const nested of clone.querySelectorAll('div[role="article"]')) {
-            nested.remove();
+          for (const el of clone.querySelectorAll('*')) {
+            const attrs = Array.from(el.attributes);
+            for (const attr of attrs) {
+              if (attr.name === 'role' || attr.name === 'dir' || attr.name === 'href' || attr.name === 'alt') continue;
+              el.removeAttribute(attr.name);
+            }
           }
-          // Now get text from remaining div[dir="auto"] elements
-          for (const el of clone.querySelectorAll('div[dir="auto"]')) {
-            const t = (el.textContent || '').trim();
-            if (t.length > postText.length) postText = t;
-          }
-          // Fallback: get all remaining text
-          if (!postText || postText.length < 5) {
-            postText = (clone.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
-          }
-          if (!postText) continue;
+          // Remove script/style tags
+          for (const el of clone.querySelectorAll('script, style, svg, img')) el.remove();
+          const html = clone.innerHTML;
+
+          // Cap HTML size — if over 15KB, truncate (very long posts are rare)
+          const postHtml = html.length > 15000 ? html.slice(0, 15000) + '...[truncated]' : html;
 
           // Post ID
           let postId = '';
@@ -365,40 +402,10 @@ async function scrape() {
           }
           if (!postId) postId = 'pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
 
-          // Author
-          let authorName = 'Unknown';
-          const authorEl = article.querySelector('h3 a strong, h4 a strong, a[role="link"] strong');
-          if (authorEl) { const n = authorEl.textContent.trim(); if (n.length > 0 && n.length < 100) authorName = n; }
+          // Fingerprint from rough text (first 80 chars, for dedup only)
+          const fingerprint = roughText.toLowerCase().slice(0, 80);
 
-          // Timestamp
-          let timestamp = new Date().toISOString();
-          const timeEl = article.querySelector('a[href*="/permalink/"] span, abbr[data-utime], time[datetime]');
-          if (timeEl) {
-            if (timeEl.getAttribute('data-utime')) timestamp = new Date(parseInt(timeEl.getAttribute('data-utime')) * 1000).toISOString();
-            else if (timeEl.getAttribute('datetime')) timestamp = new Date(timeEl.getAttribute('datetime')).toISOString();
-          }
-
-          const fingerprint = postText.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
-
-          // Comments inside this post
-          const comments = [];
-          for (const cEl of article.querySelectorAll('div[role="article"]')) {
-            let cText = '';
-            for (const el of cEl.querySelectorAll('div[dir="auto"]')) {
-              const t = (el.textContent || '').trim();
-              if (t.length > 0 && t.length > cText.length) cText = t;
-            }
-            if (!cText) continue;
-            let cId = '';
-            for (const link of cEl.querySelectorAll('a[href]')) {
-              const m = (link.getAttribute('href') || '').match(/comment_id=(\d+)/);
-              if (m) { cId = m[1]; break; }
-            }
-            if (!cId) cId = 'pup-c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-            comments.push({ postId: 'c-' + cId, authorName: 'Unknown', postText: cText.slice(0, 2000), timestamp: new Date().toISOString(), isComment: true, parentPostId: postId });
-          }
-
-          results.push({ post: { postId, authorName, postText: postText.slice(0, 2000), timestamp, isComment: false, parentPostId: null }, comments, fingerprint });
+          results.push({ postId, postHtml, fingerprint, timestamp: new Date().toISOString() });
         }
         return results;
       });
@@ -408,15 +415,17 @@ async function scrape() {
         if (processedFingerprints.has(item.fingerprint)) continue;
         processedFingerprints.add(item.fingerprint);
 
-        const isKnown = hasPriorData && (seenData.ids.has(item.post.postId) || isKnownFingerprint(item.fingerprint));
+        const isKnown = hasPriorData && (seenData.ids.has(item.postId) || isKnownFingerprint(item.fingerprint));
 
-        log(`${isKnown ? 'KNOWN' : 'NEW  '} ${item.post.timestamp} | ${item.post.postText.slice(0, 80)}`);
-        for (const c of item.comments) {
-          log(`  💬 ${c.postText.slice(0, 80)}`);
-        }
+        log(`${isKnown ? 'KNOWN' : 'NEW  '} | fp: ${item.fingerprint.slice(0, 60)}...`);
 
-        allPosts.push(item.post);
-        allPosts.push(...item.comments);
+        // Send the HTML — the server-side AI will extract text + comments
+        allPosts.push({
+          postId: item.postId,
+          postHtml: item.postHtml,
+          timestamp: item.timestamp,
+        });
+        collectedFingerprints.push({ postId: item.postId, fingerprint: item.fingerprint });
 
         if (isKnown) {
           consecutiveKnown++;
@@ -444,9 +453,7 @@ async function scrape() {
     }
 
     const posts = allPosts;
-    const postCount = posts.filter(p => !p.isComment).length;
-    const commentCount = posts.filter(p => p.isComment).length;
-    log(`Total: ${postCount} posts + ${commentCount} comments`);
+    log(`Total: ${posts.length} posts (HTML) to send for AI extraction`);
 
     if (posts.length === 0) {
       log('No posts found. Try HEADLESS=false to debug.');
@@ -456,11 +463,10 @@ async function scrape() {
     }
 
     // Save fingerprints for next run
-    for (const p of posts) {
-      if (!p.isComment) {
-        seenData.ids.add(p.postId);
-        const fp = textFingerprint(p.postText);
-        if (fp.length > 0) seenData.fingerprints.add(fp);
+    for (const item of collectedFingerprints) {
+      seenData.ids.add(item.postId);
+      if (item.fingerprint && item.fingerprint.length > 0) {
+        seenData.fingerprints.add(item.fingerprint);
       }
     }
     saveSeenPosts(seenData);
@@ -469,7 +475,7 @@ async function scrape() {
     // Snapshot trail statuses BEFORE ingest
     const beforeStatuses = await fetchTrailStatuses();
 
-    log(`Sending ${posts.length} posts to ${API_URL}/api/scrape/ingest`);
+    log(`Sending ${posts.length} post(s) (HTML) to ${API_URL}/api/scrape/ingest`);
     const response = await fetch(`${API_URL}/api/scrape/ingest`, {
       method: 'POST',
       headers: {
@@ -487,7 +493,7 @@ async function scrape() {
     }
 
     const result = await response.json();
-    log(`Done! stored=${result.stored}, classified=${result.classified}, verified=${result.verified || 0}`);
+    log(`Done! extracted=${result.extracted || 0}, stored=${result.stored}, classified=${result.classified}, verified=${result.verified || 0}`);
 
     // Snapshot trail statuses AFTER ingest
     const afterStatuses = await fetchTrailStatuses();
@@ -516,15 +522,16 @@ async function scrape() {
          </table>`
       : '';
 
+    const extracted = result.extracted || 0;
     const subject = changedCount > 0
-      ? `${changedCount} trail status change${changedCount > 1 ? 's' : ''} — ${postCount} posts, ${commentCount} comments`
+      ? `${changedCount} trail status change${changedCount > 1 ? 's' : ''} — ${posts.length} articles, ${extracted} extracted`
       : unmatched.length > 0
-        ? `${unmatched.length} unmatched post${unmatched.length > 1 ? 's' : ''} — ${postCount} posts, ${commentCount} comments`
-        : `${postCount} posts, ${commentCount} comments — no status changes`;
+        ? `${unmatched.length} unmatched post${unmatched.length > 1 ? 's' : ''} — ${posts.length} articles`
+        : `${posts.length} articles, ${extracted} extracted — no status changes`;
 
     await sendEmail(subject,
       `<h3>Scraper Run Complete</h3>
-       <p>Posts: ${postCount} · Comments: ${commentCount} · Scrolls: ${scrollCount} · New stored: ${result.stored} · Classified: ${result.classified}</p>
+       <p>Articles: ${posts.length} · Extracted: ${extracted} · Scrolls: ${scrollCount} · New stored: ${result.stored} · Classified: ${result.classified}</p>
        ${unmatchedHtml}
        <h3>Trail Statuses${changedCount > 0 ? ` (${changedCount} changed)` : ''}</h3>
        <table style="border-collapse:collapse;font-size:14px">
