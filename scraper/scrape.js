@@ -618,6 +618,11 @@ async function scrape() {
     const commentCount = posts.filter(p => p.isComment).length;
     log(`Extracted ${postCount} posts + ${commentCount} comments = ${posts.length} total`);
 
+    // Debug: show dates and first few words of each post
+    for (const p of posts.filter(pp => !pp.isComment).slice(0, 10)) {
+      log(`  POST ${p.timestamp} | ${p.postText.slice(0, 80)}...`);
+    }
+
     if (posts.length === 0) {
       log('No posts found. Try running with HEADLESS=false to see what the page looks like.');
       await sendEmail('No posts found', '<p>Scraper ran but found 0 posts. Cookies may be stale or page structure changed.</p>');
