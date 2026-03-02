@@ -138,6 +138,14 @@ function buildSystemPrompt(knownTrails: string[], aliasMap?: Map<string, string>
 - "inquiry": The post is asking about trail conditions.
 - "unrelated": The post is not about trail conditions.
 
+Common slang in this community:
+- "GTG" or "g2g" = "good to go" = dry/rideable
+- "primo" = excellent condition = dry
+- "tacky" = slightly moist but rideable = dry
+- "hero dirt" = perfect conditions = dry
+- "not g2g" or "not GTG" = not rideable = wet
+- "chocolate cake" or "peanut butter" = very muddy = wet
+
 Also provide a confidence score between 0 and 1 for your classification.
 
 IMPORTANT: Trail systems have multiple segments. If someone mentions a segment name, it refers to the parent trail. For example, if someone says "Rim Job was great today", that refers to Brushy - West.
