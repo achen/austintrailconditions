@@ -417,7 +417,6 @@ async function scrape() {
         const results = [];
         for (const article of document.querySelectorAll('div[role="article"]')) {
           if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-          // Skip skeletons — real posts have div[dir="auto"] with text
           if (!article.querySelector('div[dir="auto"]')) continue;
           results.push(article.innerHTML);
         }
