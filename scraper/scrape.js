@@ -217,121 +217,7 @@ async function fetchTrailStatuses() {
 
 // ── Post + comment extraction (runs in browser context) ──────────────
 
-function extractPostsFromPage() {
-  const results = [];
-
-  // Helper: extract text, author, id, timestamp from an article element
-  function parseArticle(article, parentPostId) {
-    let postText = '';
-    const textEls = article.querySelectorAll('div[dir="auto"]');
-    for (const el of textEls) {
-      const text = (el.textContent || '').trim();
-      if (parentPostId) {
-        // For comments, take any text at all
-        if (text.length > 0 && text.length > postText.length) postText = text;
-      } else {
-        // For top-level posts, require 20+ chars to skip UI noise
-        if (text.length > 20 && text.length > postText.length) postText = text;
-      }
-    }
-    if (!postText) return null;
-
-    let authorName = 'Unknown';
-    const authorEl = article.querySelector('h3 a strong, h4 a strong, a[role="link"] strong, span.x3nfvp2 a strong');
-    if (authorEl) {
-      const name = (authorEl.textContent || '').trim();
-      if (name.length > 0 && name.length < 100) authorName = name;
-    }
-
-    let postId = '';
-    const links = article.querySelectorAll('a[href]');
-    for (const link of links) {
-      const href = link.getAttribute('href') || '';
-      const match = href.match(/\/permalink\/(\d+)|\/posts\/(\d+)|story_fbid=(\d+)|comment_id=(\d+)/);
-      if (match) {
-        postId = match[1] || match[2] || match[3] || match[4];
-        break;
-      }
-    }
-    if (!postId) {
-      postId = 'pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-    }
-
-    // If this is a comment, prefix the ID so we can tell them apart
-    if (parentPostId) {
-      postId = 'c-' + postId;
-    }
-
-    let timestamp = new Date().toISOString();
-    const timeEl = article.querySelector('a[href*="/permalink/"] span, a[href*="comment_id"] span, abbr[data-utime], time[datetime]');
-    if (timeEl) {
-      const utime = timeEl.getAttribute('data-utime');
-      const datetime = timeEl.getAttribute('datetime');
-      if (utime) {
-        timestamp = new Date(parseInt(utime) * 1000).toISOString();
-      } else if (datetime) {
-        timestamp = new Date(datetime).toISOString();
-      }
-    }
-
-    return {
-      postId,
-      authorName,
-      postText: postText.slice(0, 2000),
-      timestamp,
-      isComment: !!parentPostId,
-      parentPostId: parentPostId || null,
-    };
-  }
-
-  // Get top-level posts
-  const topLevelArticles = document.querySelectorAll('div[role="article"]');
-
-  for (const article of topLevelArticles) {
-    try {
-      // Skip if this is a nested article (comment) — we'll get those from the parent
-      if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-
-      const post = parseArticle(article, null);
-      if (!post) continue;
-      results.push(post);
-
-      // Now get comments inside this post
-      // Facebook renders comments in various ways — try multiple selectors
-      const commentArticles = article.querySelectorAll('div[role="article"]');
-      for (const commentEl of commentArticles) {
-        try {
-          const comment = parseArticle(commentEl, post.postId);
-          if (comment) results.push(comment);
-        } catch (e) {
-          // skip bad comment
-        }
-      }
-
-      // Also look for comment-like elements that aren't role="article"
-      // Facebook often uses list items or divs inside a comments section
-      const commentContainers = article.querySelectorAll('ul[role="list"] > li, div[aria-label*="comment" i], div[data-testid*="comment"]');
-      for (const commentEl of commentContainers) {
-        try {
-          // Skip if we already got this as a nested article
-          if (commentEl.querySelector('div[role="article"]')) continue;
-          const comment = parseArticle(commentEl, post.postId);
-          if (comment) {
-            // Avoid duplicates by checking text
-            const isDupe = results.some(r => r.postText === comment.postText && r.isComment);
-            if (!isDupe) results.push(comment);
-          }
-        } catch (e) {
-          // skip
-        }
-      }
-    } catch (e) {
-      // skip malformed post
-    }
-  }
-
-  return results;
-}
+// (Post extraction is now done inline during the scroll loop)
 
 // ── Main scrape function ─────────────────────────────────────────────
 
@@ -345,7 +231,6 @@ async function scrape() {
   }
   log(`Using Chrome: ${chromePath}`);
 
-  // Sync cookies/session from your real Chrome profile
   syncProfile();
 
   let browser;
@@ -373,42 +258,32 @@ async function scrape() {
     await page.goto(FB_GROUP, { waitUntil: 'networkidle2', timeout: 60000 });
     await randomDelay(3000, 5000);
 
-    const url = page.url();
-    if (url.includes('/login')) {
-      log('ERROR: Not logged into Facebook! Open Chrome, log in manually, then try again.');
+    if (page.url().includes('/login')) {
+      log('ERROR: Not logged into Facebook!');
       await browser.close();
       process.exit(2);
     }
 
-    // Sort by "Recent activity" to surface posts with new comments
-    log('Switching to Recent activity sort order...');
+    // Sort by "Recent activity"
+    log('Switching to Recent activity sort...');
     try {
-      // The sort control shows as "New posts ▾" or "Most relevant ▾" — it's a clickable dropdown
       const sortClicked = await page.evaluate(() => {
-        // Look for the sort dropdown — text like "New posts", "Most relevant", or "Recent activity"
-        // followed by a dropdown arrow. It's typically a span or div that's clickable.
         const allEls = Array.from(document.querySelectorAll('span, div'));
         for (const el of allEls) {
           const text = (el.textContent || '').trim().toLowerCase();
           if ((text === 'new posts' || text === 'most relevant' || text === 'recent activity') &&
               el.offsetParent !== null) {
-            // Check if this element or a close parent is clickable
-            const clickTarget = el.closest('[role="button"]') || el;
-            clickTarget.click();
+            (el.closest('[role="button"]') || el).click();
             return text;
           }
         }
         return null;
       });
-
       if (sortClicked) {
         log(`Clicked sort dropdown (was: "${sortClicked}").`);
         await randomDelay(1500, 2500);
-
-        // Now click "Recent activity" in the dropdown menu
         const picked = await page.evaluate(() => {
-          const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], div[role="menuitemradio"], div[role="radio"], span'));
-          for (const item of items) {
+          for (const item of document.querySelectorAll('div[role="menuitem"], div[role="option"], div[role="menuitemradio"], span')) {
             const text = (item.textContent || '').trim().toLowerCase();
             if (text === 'recent activity' || text.startsWith('recent activity')) {
               item.click();
@@ -417,220 +292,160 @@ async function scrape() {
           }
           return false;
         });
-        if (picked) {
-          log('Sorted by Recent activity.');
-          await randomDelay(2000, 3000);
-        } else {
-          log('Could not find "Recent activity" in dropdown — using current sort.');
-        }
+        log(picked ? 'Sorted by Recent activity.' : 'Could not find "Recent activity" in dropdown.');
+        await randomDelay(2000, 3000);
       } else {
-        log('Sort dropdown not found — using default sort.');
+        log('Sort dropdown not found.');
       }
     } catch (e) {
-      log('Sort switch failed (non-fatal): ' + e.message);
+      log('Sort failed (non-fatal): ' + e.message);
     }
 
-    log('Checking for known posts...');
+    // Wait for feed
+    log('Waiting for feed...');
+    try {
+      await page.waitForSelector('div[role="feed"]', { timeout: 15000 });
+    } catch (e) {
+      log('Feed container not found, trying div[role="article"]...');
+      try { await page.waitForSelector('div[role="article"]', { timeout: 10000 }); } catch (e2) {}
+    }
+    await randomDelay(2000, 3000);
 
     const seenData = loadSeenPosts();
-    log(`Loaded ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} text fingerprints.`);
+    log(`Loaded ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
     const hasPriorData = seenData.ids.size > 0 || seenData.fingerprints.size > 0;
-    let foundKnown = false;
-    let scrollCount = 0;
 
-    // Wait for posts to actually render in the DOM
-    log('Waiting for posts to render...');
-    try {
-      // Try multiple selectors — Facebook changes their DOM structure
-      await Promise.race([
-        page.waitForSelector('div[role="article"]', { timeout: 15000 }),
-        page.waitForSelector('div[role="feed"] > div', { timeout: 15000 }),
-        page.waitForSelector('div[data-pagelet*="GroupFeed"]', { timeout: 15000 }),
-      ]).catch(() => {});
-      await randomDelay(3000, 4000); // extra buffer for lazy-loaded content
-    } catch (e) {
-      log('WARNING: Feed selector wait failed — continuing anyway.');
-    }
-
-    // Debug: check what selectors actually match
-    const domDebug = await page.evaluate(() => {
-      return {
-        articles: document.querySelectorAll('div[role="article"]').length,
-        feedDivs: document.querySelectorAll('div[role="feed"] > div').length,
-        feedExists: !!document.querySelector('div[role="feed"]'),
-        groupFeed: !!document.querySelector('div[data-pagelet*="GroupFeed"]'),
-        allDirAuto: document.querySelectorAll('div[dir="auto"]').length,
-        bodyTextSample: document.body.innerText.slice(0, 200),
-      };
-    });
-    log(`DEBUG DOM: articles=${domDebug.articles}, feedDivs=${domDebug.feedDivs}, feed=${domDebug.feedExists}, groupFeed=${domDebug.groupFeed}, dirAuto=${domDebug.allDirAuto}`);
-    if (domDebug.articles === 0) {
-      log(`DEBUG body sample: ${domDebug.bodyTextSample.replace(/\n/g, ' ').slice(0, 150)}`);
-    }
-
-    // Extract post text fingerprints from visible top-level posts
-    // Uses the SAME normalization as textFingerprint() so matches work
-    const getVisiblePostSignatures = () => page.evaluate(() => {
-      const results = [];
-      const articles = document.querySelectorAll('div[role="article"]');
-      for (const article of articles) {
-        if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
-
-        // Get permalink ID if available
-        let postId = null;
-        const links = article.querySelectorAll('a[href]');
-        for (const link of links) {
-          const href = link.getAttribute('href') || '';
-          const match = href.match(/\/permalink\/(\d+)|\/posts\/(\d+)|story_fbid=(\d+)/);
-          if (match) {
-            postId = match[1] || match[2] || match[3];
-            break;
-          }
-        }
-
-        // Get ALL text from div[dir="auto"] and pick the longest
-        let text = '';
-        const textEls = article.querySelectorAll('div[dir="auto"]');
-        for (const el of textEls) {
-          const t = (el.textContent || '').trim();
-          if (t.length > text.length) text = t;
-        }
-        // Same normalization as textFingerprint() — 80 chars
-        const fingerprint = text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
-
-        if (postId || fingerprint.length > 0) {
-          results.push({ postId, fingerprint });
-        }
-      }
-      return results;
-    });
-
-    // Check if a fingerprint matches any saved fingerprint
-    // Uses startsWith comparison to handle "See more" truncation differences
     function isKnownFingerprint(fp) {
       if (!fp || fp.length === 0) return false;
-      const fpShort = fp.slice(0, 40); // compare first 40 chars for fuzzy tolerance
+      const fpShort = fp.slice(0, 40);
       for (const saved of seenData.fingerprints) {
-        if (saved.startsWith(fpShort) || fp.startsWith(saved.slice(0, 40))) {
-          return true;
-        }
+        if (saved.startsWith(fpShort) || fp.startsWith(saved.slice(0, 40))) return true;
       }
       return false;
     }
 
-    function countKnown(visible) {
-      let count = 0;
-      for (const v of visible) {
-        if ((v.postId && seenData.ids.has(v.postId)) || isKnownFingerprint(v.fingerprint)) {
-          count++;
+    // ── Scroll + extract loop ──────────────────────────────────────
+    const allPosts = [];
+    const processedFingerprints = new Set();
+    let scrollCount = 0;
+    let consecutiveKnown = 0;
+    let foundKnown = false;
+
+    for (let round = 0; round <= MAX_SCROLLS; round++) {
+      // Extract all visible top-level posts and their comments
+      const postData = await page.evaluate(() => {
+        const articles = document.querySelectorAll('div[role="article"]');
+        const results = [];
+        for (const article of articles) {
+          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+
+          // Post text — pick longest div[dir="auto"] > 20 chars
+          let postText = '';
+          for (const el of article.querySelectorAll('div[dir="auto"]')) {
+            const t = (el.textContent || '').trim();
+            if (t.length > 20 && t.length > postText.length) postText = t;
+          }
+          if (!postText) continue;
+
+          // Post ID
+          let postId = '';
+          for (const link of article.querySelectorAll('a[href]')) {
+            const m = (link.getAttribute('href') || '').match(/\/permalink\/(\d+)|\/posts\/(\d+)|story_fbid=(\d+)/);
+            if (m) { postId = m[1] || m[2] || m[3]; break; }
+          }
+          if (!postId) postId = 'pup-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+
+          // Author
+          let authorName = 'Unknown';
+          const authorEl = article.querySelector('h3 a strong, h4 a strong, a[role="link"] strong');
+          if (authorEl) { const n = authorEl.textContent.trim(); if (n.length > 0 && n.length < 100) authorName = n; }
+
+          // Timestamp
+          let timestamp = new Date().toISOString();
+          const timeEl = article.querySelector('a[href*="/permalink/"] span, abbr[data-utime], time[datetime]');
+          if (timeEl) {
+            if (timeEl.getAttribute('data-utime')) timestamp = new Date(parseInt(timeEl.getAttribute('data-utime')) * 1000).toISOString();
+            else if (timeEl.getAttribute('datetime')) timestamp = new Date(timeEl.getAttribute('datetime')).toISOString();
+          }
+
+          const fingerprint = postText.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
+
+          // Comments inside this post
+          const comments = [];
+          for (const cEl of article.querySelectorAll('div[role="article"]')) {
+            let cText = '';
+            for (const el of cEl.querySelectorAll('div[dir="auto"]')) {
+              const t = (el.textContent || '').trim();
+              if (t.length > 0 && t.length > cText.length) cText = t;
+            }
+            if (!cText) continue;
+            let cId = '';
+            for (const link of cEl.querySelectorAll('a[href]')) {
+              const m = (link.getAttribute('href') || '').match(/comment_id=(\d+)/);
+              if (m) { cId = m[1]; break; }
+            }
+            if (!cId) cId = 'pup-c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+            comments.push({ postId: 'c-' + cId, authorName: 'Unknown', postText: cText.slice(0, 2000), timestamp: new Date().toISOString(), isComment: true, parentPostId: postId });
+          }
+
+          results.push({ post: { postId, authorName, postText: postText.slice(0, 2000), timestamp, isComment: false, parentPostId: null }, comments, fingerprint });
+        }
+        return results;
+      });
+
+      // Process new posts we haven't seen in this run
+      for (const item of postData) {
+        if (processedFingerprints.has(item.fingerprint)) continue;
+        processedFingerprints.add(item.fingerprint);
+
+        const isKnown = hasPriorData && (seenData.ids.has(item.post.postId) || isKnownFingerprint(item.fingerprint));
+
+        log(`${isKnown ? 'KNOWN' : 'NEW  '} ${item.post.timestamp} | ${item.post.postText.slice(0, 80)}`);
+        for (const c of item.comments) {
+          log(`  💬 ${c.postText.slice(0, 80)}`);
+        }
+
+        allPosts.push(item.post);
+        allPosts.push(...item.comments);
+
+        if (isKnown) {
+          consecutiveKnown++;
+          if (consecutiveKnown >= 2) {
+            log(`Hit ${consecutiveKnown} consecutive known posts — stopping.`);
+            foundKnown = true;
+            break;
+          }
+        } else {
+          consecutiveKnown = 0;
         }
       }
-      return count;
-    }
 
-    // Check BEFORE scrolling — if the initial page already has known posts, stop immediately
-    if (hasPriorData) {
-      await randomDelay(1000, 2000);
-      const initialVisible = await getVisiblePostSignatures();
-      // Debug: log first few fingerprints so we can diagnose mismatches
-      log(`DEBUG: ${initialVisible.length} posts visible on page`);
-      for (const v of initialVisible.slice(0, 3)) {
-        log(`  visible fp: "${v.fingerprint.slice(0, 50)}..." id=${v.postId || 'none'}`);
-      }
-      const savedSample = Array.from(seenData.fingerprints).slice(0, 3);
-      for (const s of savedSample) {
-        log(`  saved fp:   "${s.slice(0, 50)}..."`);
-      }
-      const initialKnown = countKnown(initialVisible);
-      if (initialKnown >= 2) {
-        log(`Found ${initialKnown} known posts on initial page load — already caught up.`);
-        foundKnown = true;
-      } else {
-        log(`${initialKnown} known post(s) on initial load, scrolling for more...`);
-      }
-    }
+      if (foundKnown || round >= MAX_SCROLLS) break;
 
-    while (!foundKnown && scrollCount < MAX_SCROLLS) {
-      const scrollAmount = 600 + Math.floor(Math.random() * 800);
-      await page.evaluate((amount) => window.scrollBy(0, amount), scrollAmount);
+      // Scroll
+      await page.evaluate((amt) => window.scrollBy(0, amt), 600 + Math.floor(Math.random() * 800));
       scrollCount++;
-
-      const delay = 2000 + Math.random() * 3000;
-      log(`Scroll ${scrollCount}/${MAX_SCROLLS}, waiting ${Math.round(delay)}ms...`);
-      await randomDelay(delay, delay + 500);
-
-      if (hasPriorData) {
-        const visible = await getVisiblePostSignatures();
-        const knownCount = countKnown(visible);
-        if (knownCount >= 2) {
-          log(`Found ${knownCount} known posts (by ID or text) — caught up, stopping scroll.`);
-          foundKnown = true;
-          break;
-        }
-      }
+      log(`Scroll ${scrollCount}/${MAX_SCROLLS}...`);
+      await randomDelay(2000, 2000 + Math.random() * 2000);
     }
 
     if (!foundKnown && hasPriorData) {
-      log(`Hit max scrolls (${MAX_SCROLLS}) without finding a known post.`);
+      log(`Hit max scrolls (${MAX_SCROLLS}) without finding enough known posts.`);
     }
 
-    await randomDelay(2000, 3000);
-
-    // Expand comments on visible posts before extracting
-    log('Expanding comments...');
-    const expandedCount = await page.evaluate(async () => {
-      let clicked = 0;
-      // Click "View more comments", "View all X comments", "X replies", etc.
-      // Run multiple rounds since expanding one section may reveal more
-      for (let round = 0; round < 5; round++) {
-        let roundClicks = 0;
-        const clickables = Array.from(document.querySelectorAll(
-          'div[role="button"], span[role="button"], span[tabindex="0"], div[tabindex="0"]'
-        ));
-        for (const btn of clickables) {
-          const text = (btn.textContent || '').trim().toLowerCase();
-          if (
-            text.includes('view more comment') ||
-            text.includes('view all') ||
-            text.includes('most relevant') ||
-            text.includes('all comments') ||
-            text.match(/view \d+ more comment/) ||
-            text.match(/view \d+ previous/) ||
-            text.match(/\d+ repl/) ||
-            text.match(/see more/)
-          ) {
-            try { btn.click(); } catch(e) {}
-            roundClicks++;
-            clicked++;
-            await new Promise(r => setTimeout(r, 800 + Math.random() * 600));
-          }
-        }
-        if (roundClicks === 0) break;
-        await new Promise(r => setTimeout(r, 1500));
-      }
-      return clicked;
-    });
-    log(`Expanded ${expandedCount} comment sections.`);
-    await randomDelay(1500, 2500);
-
-    const posts = await page.evaluate(extractPostsFromPage);
+    const posts = allPosts;
     const postCount = posts.filter(p => !p.isComment).length;
     const commentCount = posts.filter(p => p.isComment).length;
-    log(`Extracted ${postCount} posts + ${commentCount} comments = ${posts.length} total`);
-
-    // Debug: show dates and first few words of each post
-    for (const p of posts.filter(pp => !pp.isComment).slice(0, 10)) {
-      log(`  POST ${p.timestamp} | ${p.postText.slice(0, 80)}...`);
-    }
+    log(`Total: ${postCount} posts + ${commentCount} comments`);
 
     if (posts.length === 0) {
-      log('No posts found. Try running with HEADLESS=false to see what the page looks like.');
-      await sendEmail('No posts found', '<p>Scraper ran but found 0 posts. Cookies may be stale or page structure changed.</p>');
+      log('No posts found. Try HEADLESS=false to debug.');
+      await sendEmail('No posts found', '<p>Scraper ran but found 0 posts.</p>');
       await browser.close();
       process.exit(0);
     }
 
-    // Save all post IDs and text fingerprints for next run
+    // Save fingerprints for next run
     for (const p of posts) {
       if (!p.isComment) {
         seenData.ids.add(p.postId);
