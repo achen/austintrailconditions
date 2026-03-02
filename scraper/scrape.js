@@ -294,12 +294,22 @@ async function scrape() {
     catch { try { await page.waitForSelector('div[role="article"]', { timeout: 10000 }); } catch {} }
     await randomDelay(2000, 3000);
 
+    // Wait for posts to finish loading (Facebook lazy-loads content)
+    log('Waiting for posts to load...');
+    await page.waitForFunction(() => {
+      const loaders = document.querySelectorAll('[aria-label="Loading..."], [data-visualcompletion="loading-state"]');
+      return loaders.length === 0;
+    }, { timeout: 15000 }).catch(() => log('Loading indicators still present after 15s, continuing anyway.'));
+    await randomDelay(1000, 2000);
+
     // Debug mode: dump first article HTML and exit
     if (process.env.DEBUG_FIRST === 'true') {
-      log('DEBUG_FIRST mode — dumping first article HTML...');
+      log('DEBUG_FIRST mode — dumping first real article HTML...');
       const firstHtml = await page.evaluate(() => {
         for (const article of document.querySelectorAll('div[role="article"]')) {
           if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+          // Skip loading skeletons
+          if (article.querySelector('[aria-label="Loading..."]')) continue;
           return article.outerHTML;
         }
         return null;
@@ -361,11 +371,12 @@ async function scrape() {
       });
       await randomDelay(500, 1000);
 
-      // Grab raw HTML of each top-level article
+      // Grab raw HTML of each top-level article (skip loading skeletons)
       const articleHtmls = await page.evaluate(() => {
         const results = [];
         for (const article of document.querySelectorAll('div[role="article"]')) {
           if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+          if (article.querySelector('[aria-label="Loading..."]')) continue;
           results.push(article.innerHTML);
         }
         return results;
@@ -439,6 +450,11 @@ async function scrape() {
       scrollCount++;
       log(`Scroll ${scrollCount}/${MAX_SCROLLS}...`);
       await randomDelay(2000, 4000);
+      // Wait for new posts to finish loading
+      await page.waitForFunction(() => {
+        const loaders = document.querySelectorAll('[aria-label="Loading..."], [data-visualcompletion="loading-state"]');
+        return loaders.length === 0;
+      }, { timeout: 10000 }).catch(() => {});
     }
 
     if (!foundKnown && hasPriorData) {
