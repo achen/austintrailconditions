@@ -272,15 +272,18 @@ async function scrape() {
       if (req.method() !== 'POST') return;
       const body = req.postData() || '';
       const docId = (body.match(/doc_id=(\d+)/) || [])[1];
-      let varsPreview = '';
+      let variables = null;
       const m = body.match(/variables=([^&]+)/);
       if (m) {
-        try { varsPreview = decodeURIComponent(m[1]).slice(0, 300); } catch {}
+        try { variables = JSON.parse(decodeURIComponent(m[1])); } catch {}
       }
       const friendly = (body.match(/fb_api_req_friendly_name=([^&]+)/) || [])[1];
+      const varsStr = variables ? JSON.stringify(variables) : '';
+      const seemsGroup = varsStr.includes('325119181430845') || varsStr.includes('"group"');
       if (docId || friendly) {
-        log(`[GQL REQ] docId=${docId} friendly=${friendly ? decodeURIComponent(friendly) : '-'}`);
-        if (varsPreview) log(`  vars: ${varsPreview}`);
+        log(`[GQL REQ] docId=${docId} friendly=${friendly ? decodeURIComponent(friendly) : '-'} group=${seemsGroup}`);
+        if (variables) log(`  vars: ${JSON.stringify(Object.keys(variables).slice(0, 15))}`);
+        if (seemsGroup) log(`  FULL VARS: ${varsStr.slice(0, 500)}`);
       }
     });
 
@@ -321,8 +324,16 @@ async function scrape() {
       }
     });
 
-    log('Navigating to group...');
-    await page.goto(FB_GROUP, { waitUntil: 'networkidle2', timeout: 60000 });
+    log('Navigating to group (discussion tab)...');
+    await page.goto(FB_GROUP + '?sorting_setting=CHRONOLOGICAL', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // Scroll to trigger the feed GraphQL query
+    await randomDelay(2000, 3000);
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+      await randomDelay(1000, 1500);
+    }
+    // Wait for network to settle
+    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
     log(`Page loaded. ${graphqlResponses.length} GraphQL responses captured.`);
     await randomDelay(3000, 5000);
 
@@ -370,37 +381,15 @@ async function scrape() {
       process.exit(0);
     }
 
-    // ── Sort by "Recent activity" ──────────────────────────────────
-    log('Switching to Recent activity sort...');
-    try {
-      const sortClicked = await page.evaluate(() => {
-        for (const el of document.querySelectorAll('span, div')) {
-          const text = (el.textContent || '').trim().toLowerCase();
-          if ((text === 'new posts' || text === 'most relevant' || text === 'recent activity') && el.offsetParent !== null) {
-            (el.closest('[role="button"]') || el).click();
-            return text;
-          }
-        }
-        return null;
-      });
-      if (sortClicked) {
-        log(`Clicked sort dropdown (was: "${sortClicked}").`);
-        await randomDelay(1500, 2500);
-        const picked = await page.evaluate(() => {
-          for (const item of document.querySelectorAll('div[role="menuitem"], div[role="option"], div[role="menuitemradio"], span')) {
-            if ((item.textContent || '').trim().toLowerCase().startsWith('recent activity')) { item.click(); return true; }
-          }
-          return false;
-        });
-        log(picked ? 'Sorted by Recent activity.' : 'Could not find "Recent activity" option.');
-        await randomDelay(2000, 3000);
-      }
-    } catch (e) { log('Sort failed (non-fatal): ' + e.message); }
-
-    // Wait a bit for the re-sorted feed to load via GraphQL
-    const preScrollCount = graphqlResponses.length;
-    await randomDelay(3000, 5000);
-    log(`After sort: ${graphqlResponses.length} GraphQL responses (${graphqlResponses.length - preScrollCount} new).`);
+    // Sort is handled by ?sorting_setting=CHRONOLOGICAL in the URL
+    // Scroll to trigger feed loading
+    log('Scrolling to trigger feed load...');
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+      await randomDelay(1000, 1500);
+    }
+    await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
+    log(`Feed load: ${graphqlResponses.length} GraphQL responses total.`);
 
     // ── Extract posts from all GraphQL data so far ─────────────────
     const seenData = loadSeenPosts();
