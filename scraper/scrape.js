@@ -51,6 +51,9 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const ALERT_EMAIL = process.env.ALERT_EMAIL || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'info@austintrailconditions.com';
 
+// OpenAI config
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+
 // File to persist known post IDs between runs
 const SEEN_FILE = path.join(__dirname, '.seen-posts.json');
 
@@ -144,12 +147,6 @@ function randomDelay(minMs, maxMs) {
 // because Facebook doesn't always render permalink links, so many posts
 // get synthetic "pup-" IDs that change every run.
 
-function textFingerprint(text) {
-  // Normalize: lowercase, collapse whitespace, take first 80 chars
-  // Using 80 chars to avoid "See more" truncation differences
-  return (text || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
-}
-
 function loadSeenPosts() {
   try {
     if (fs.existsSync(SEEN_FILE)) {
@@ -212,6 +209,59 @@ async function fetchTrailStatuses() {
     return map;
   } catch {
     return {};
+  }
+}
+
+// ── AI text extraction from HTML ─────────────────────────────────────
+
+const EXTRACTION_PROMPT = `You are an HTML parser for Facebook group posts. Given the HTML of a Facebook post article, extract:
+
+1. The main post text (what the author wrote)
+2. The author name if visible
+3. Any comments and their authors
+
+IMPORTANT:
+- The post text is usually in div[dir="auto"] elements NOT inside nested div[role="article"] elements
+- Comments are inside nested div[role="article"] elements
+- Ignore UI text like "Like", "Reply", "Share", timestamps, "Write a comment", etc.
+- Ignore photo/video captions that are just file descriptions
+- Return ONLY the actual human-written content
+
+Respond with JSON only:
+{"postText": "the main post content", "authorName": "Author Name or Unknown", "comments": [{"authorName": "Name", "commentText": "text"}]}`;
+
+async function extractPostFromHtml(postId, html) {
+  if (!OPENAI_API_KEY) {
+    log(`WARNING: No OPENAI_API_KEY, cannot extract text from HTML for ${postId}`);
+    return null;
+  }
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.2',
+        messages: [
+          { role: 'system', content: EXTRACTION_PROMPT },
+          { role: 'user', content: html },
+        ],
+        temperature: 0,
+        max_tokens: 2000,
+      }),
+    });
+    if (!res.ok) {
+      log(`OpenAI error ${res.status} for ${postId}`);
+      return null;
+    }
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    return JSON.parse(content);
+  } catch (e) {
+    log(`AI extraction failed for ${postId}: ${e.message}`);
+    return null;
   }
 }
 
@@ -404,7 +454,7 @@ async function scrape() {
 
         const isKnown = hasPriorData && (seenData.ids.has(item.postId) || isKnownFingerprint(item.fingerprint));
 
-        log(`${isKnown ? 'KNOWN' : 'NEW  '} | fp: ${item.fingerprint.slice(0, 60)}...`);
+        log(`${isKnown ? 'KNOWN' : 'NEW  '} | ${item.fingerprint.slice(0, 60)}...`);
 
         // Send the HTML — the server-side AI will extract text + comments
         allPosts.push({
@@ -440,7 +490,7 @@ async function scrape() {
     }
 
     const posts = allPosts;
-    log(`Total: ${posts.length} posts (HTML) to send for AI extraction`);
+    log(`Total: ${posts.length} articles scraped. Running AI extraction...`);
 
     if (posts.length === 0) {
       log('No posts found. Try HEADLESS=false to debug.');
@@ -459,17 +509,58 @@ async function scrape() {
     saveSeenPosts(seenData);
     log(`Saved ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
 
+    // AI extraction: convert HTML to clean text + comments
+    const extractedPosts = [];
+    for (const item of posts) {
+      const result = await extractPostFromHtml(item.postId, item.postHtml);
+      if (!result || !result.postText) {
+        log(`  ❌ ${item.postId}: AI returned no text`);
+        continue;
+      }
+      log(`  📝 ${result.authorName || 'Unknown'}: ${result.postText.slice(0, 100)}`);
+      // Main post
+      extractedPosts.push({
+        postId: item.postId,
+        authorName: result.authorName || 'Unknown',
+        postText: result.postText.slice(0, 2000),
+        timestamp: item.timestamp,
+      });
+      // Comments
+      for (let i = 0; i < (result.comments || []).length; i++) {
+        const c = result.comments[i];
+        if (!c.commentText) continue;
+        log(`    💬 ${c.authorName || 'Unknown'}: ${c.commentText.slice(0, 100)}`);
+        extractedPosts.push({
+          postId: `${item.postId}-c${i}`,
+          authorName: c.authorName || 'Unknown',
+          postText: c.commentText.slice(0, 2000),
+          timestamp: item.timestamp,
+        });
+      }
+    }
+
+    const postCount = posts.length;
+    const commentCount = extractedPosts.length - postCount;
+    log(`Extracted: ${extractedPosts.length} items (${postCount} posts + ${Math.max(0, commentCount)} comments)`);
+
+    if (extractedPosts.length === 0) {
+      log('AI extraction returned nothing. Check OPENAI_API_KEY.');
+      await sendEmail('AI extraction failed', '<p>Scraper found posts but AI could not extract text.</p>');
+      await browser.close();
+      process.exit(0);
+    }
+
     // Snapshot trail statuses BEFORE ingest
     const beforeStatuses = await fetchTrailStatuses();
 
-    log(`Sending ${posts.length} post(s) (HTML) to ${API_URL}/api/scrape/ingest`);
+    log(`Sending ${extractedPosts.length} extracted posts to ${API_URL}/api/scrape/ingest`);
     const response = await fetch(`${API_URL}/api/scrape/ingest`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${API_SECRET}`,
       },
-      body: JSON.stringify({ posts }),
+      body: JSON.stringify({ posts: extractedPosts }),
     });
 
     if (!response.ok) {
@@ -480,7 +571,7 @@ async function scrape() {
     }
 
     const result = await response.json();
-    log(`Done! extracted=${result.extracted || 0}, stored=${result.stored}, classified=${result.classified}, verified=${result.verified || 0}`);
+    log(`Done! stored=${result.stored}, classified=${result.classified}, verified=${result.verified || 0}`);
 
     // Snapshot trail statuses AFTER ingest
     const afterStatuses = await fetchTrailStatuses();
@@ -498,27 +589,25 @@ async function scrape() {
       return `<tr style="${style}"><td style="padding:4px 8px">${name}</td><td style="padding:4px 8px">${label}</td></tr>`;
     }).join('');
 
-    // Build unmatched posts section (trail-related but no trail identified)
     const unmatched = result.unmatchedPosts || [];
     const unmatchedHtml = unmatched.length > 0
       ? `<h3>⚠️ Unmatched Posts (${unmatched.length})</h3>
-         <p style="font-size:12px;color:#666">These posts seem trail-related but couldn't be matched to a specific trail. You may need to add aliases.</p>
+         <p style="font-size:12px;color:#666">These posts seem trail-related but couldn't be matched to a specific trail.</p>
          <table style="border-collapse:collapse;font-size:13px;width:100%">
            <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Type</th><th style="padding:4px 8px;text-align:left">Post</th></tr>
            ${unmatched.map(p => `<tr><td style="padding:4px 8px;vertical-align:top;color:${p.classification === 'dry' ? 'green' : 'red'}">${p.classification}</td><td style="padding:4px 8px">${p.text}</td></tr>`).join('')}
          </table>`
       : '';
 
-    const extracted = result.extracted || 0;
     const subject = changedCount > 0
-      ? `${changedCount} trail status change${changedCount > 1 ? 's' : ''} — ${posts.length} articles, ${extracted} extracted`
+      ? `${changedCount} trail status change${changedCount > 1 ? 's' : ''} — ${postCount} posts, ${Math.max(0, commentCount)} comments`
       : unmatched.length > 0
-        ? `${unmatched.length} unmatched post${unmatched.length > 1 ? 's' : ''} — ${posts.length} articles`
-        : `${posts.length} articles, ${extracted} extracted — no status changes`;
+        ? `${unmatched.length} unmatched — ${postCount} posts, ${Math.max(0, commentCount)} comments`
+        : `${postCount} posts, ${Math.max(0, commentCount)} comments — no changes`;
 
     await sendEmail(subject,
       `<h3>Scraper Run Complete</h3>
-       <p>Articles: ${posts.length} · Extracted: ${extracted} · Scrolls: ${scrollCount} · New stored: ${result.stored} · Classified: ${result.classified}</p>
+       <p>Articles: ${postCount} · Comments: ${Math.max(0, commentCount)} · Scrolls: ${scrollCount} · Stored: ${result.stored} · Classified: ${result.classified}</p>
        ${unmatchedHtml}
        <h3>Trail Statuses${changedCount > 0 ? ` (${changedCount} changed)` : ''}</h3>
        <table style="border-collapse:collapse;font-size:14px">
