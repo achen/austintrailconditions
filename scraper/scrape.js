@@ -339,11 +339,36 @@ async function scrape() {
         for (const article of articles) {
           if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
 
-          // Post text — pick longest div[dir="auto"] > 20 chars
+          // Post text — try multiple strategies
           let postText = '';
+          
+          // Strategy 1: div[dir="auto"] with > 20 chars (standard FB post text)
           for (const el of article.querySelectorAll('div[dir="auto"]')) {
+            // Skip if this element is inside a nested article (comment)
+            if (el.closest('div[role="article"]') !== article) continue;
             const t = (el.textContent || '').trim();
             if (t.length > 20 && t.length > postText.length) postText = t;
+          }
+          
+          // Strategy 2: If nothing found, try concatenating all dir="auto" text
+          if (!postText) {
+            const parts = [];
+            for (const el of article.querySelectorAll('div[dir="auto"]')) {
+              if (el.closest('div[role="article"]') !== article) continue;
+              const t = (el.textContent || '').trim();
+              if (t.length > 0) parts.push(t);
+            }
+            postText = parts.join(' ').trim();
+          }
+          
+          // Strategy 3: If still nothing, get all text from the article excluding comments
+          if (!postText) {
+            const clone = article.cloneNode(true);
+            // Remove nested articles (comments)
+            for (const nested of clone.querySelectorAll('div[role="article"]')) {
+              nested.remove();
+            }
+            postText = (clone.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
           }
           if (!postText) continue;
 
