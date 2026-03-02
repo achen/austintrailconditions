@@ -106,16 +106,18 @@ function loadSeenPosts() {
       return {
         ids: new Set(data.postIds || []),
         fingerprints: new Set(data.fingerprints || []),
+        commentIds: new Set(data.commentIds || []),
       };
     }
   } catch { log('Could not load seen posts, starting fresh.'); }
-  return { ids: new Set(), fingerprints: new Set() };
+  return { ids: new Set(), fingerprints: new Set(), commentIds: new Set() };
 }
 
 function saveSeenPosts(seenData) {
   const ids = Array.from(seenData.ids).slice(-500);
   const fingerprints = Array.from(seenData.fingerprints).slice(-500);
-  fs.writeFileSync(SEEN_FILE, JSON.stringify({ postIds: ids, fingerprints, updatedAt: new Date().toISOString() }));
+  const commentIds = Array.from(seenData.commentIds).slice(-2000);
+  fs.writeFileSync(SEEN_FILE, JSON.stringify({ postIds: ids, fingerprints, commentIds, updatedAt: new Date().toISOString() }));
 }
 
 function makeFingerprint(text) {
@@ -351,77 +353,6 @@ function findCommentNodes(obj, results, seen, depth) {
   }
 }
 
-/**
- * Scan all GraphQL responses for Comment nodes and return them grouped by parent post ID.
- * Comment responses from clicking "X comments" have different structures than feed responses.
- * We recursively search for Comment nodes and try to find the associated post_id.
- */
-function extractCommentsFromAllResponses(responses) {
-  const commentsByPost = new Map(); // postId -> [{commentId, authorName, commentText}]
-  const seenCommentTexts = new Set();
-
-  for (const resp of responses) {
-    // Try to find the parent post_id for this response
-    const postId = findPostIdInResponse(resp);
-
-    // Recursively find all Comment nodes
-    const comments = [];
-    findAllComments(resp, comments, seenCommentTexts, 0);
-
-    if (comments.length > 0 && postId) {
-      if (!commentsByPost.has(postId)) commentsByPost.set(postId, []);
-      commentsByPost.get(postId).push(...comments);
-    } else if (comments.length > 0) {
-      // No post ID found — store under 'unknown'
-      if (!commentsByPost.has('unknown')) commentsByPost.set('unknown', []);
-      commentsByPost.get('unknown').push(...comments);
-    }
-  }
-
-  return commentsByPost;
-}
-
-function findPostIdInResponse(obj, depth = 0) {
-  if (!obj || typeof obj !== 'object' || depth > 10) return null;
-  // Look for post_id or feedback_id that looks like a post
-  if (obj.post_id && /^\d+$/.test(String(obj.post_id))) return String(obj.post_id);
-  // Story node with post_id
-  if (obj.__typename === 'Story' && obj.post_id) return String(obj.post_id);
-  // Check data.node path
-  if (obj.data?.node?.post_id) return String(obj.data.node.post_id);
-  // Check feedback target post
-  if (obj.data?.node?.__typename === 'Story') return findPostIdInResponse(obj.data.node, depth + 1);
-  // Recurse into data
-  if (obj.data && depth < 3) return findPostIdInResponse(obj.data, depth + 1);
-  return null;
-}
-
-function findAllComments(obj, results, seen, depth) {
-  if (!obj || typeof obj !== 'object' || depth > 15) return;
-
-  if (obj.__typename === 'Comment') {
-    const text = obj?.body?.text || obj?.message?.text;
-    if (text && text.length >= 1) {
-      const fp = text.slice(0, 60).toLowerCase();
-      if (!seen.has(fp)) {
-        seen.add(fp);
-        const author = obj?.author?.name || obj?.actors?.[0]?.name || 'Unknown';
-        const commentId = obj?.id || obj?.legacy_fbid || null;
-        results.push({ commentId, authorName: author, commentText: text });
-      }
-    }
-  }
-
-  if (Array.isArray(obj)) {
-    for (const item of obj) findAllComments(item, results, seen, depth + 1);
-  } else {
-    for (const key of Object.keys(obj)) {
-      if (key === 'message' || key === 'body') continue;
-      findAllComments(obj[key], results, seen, depth + 1);
-    }
-  }
-}
-
 // ── Main scrape function ─────────────────────────────────────────────
 
 /**
@@ -429,9 +360,10 @@ function findAllComments(obj, results, seen, depth) {
  * FB renders comments server-side — GraphQL interception doesn't capture them.
  * Returns a Map of postId -> [{commentId, authorName, commentText}]
  */
-async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845') {
+async function loadCommentsViaPermalinks(page, posts, seenData = null, groupId = '325119181430845') {
   const commentsByPost = new Map();
   const postsWithComments = posts.filter(p => p.postId && /^\d+$/.test(p.postId));
+  let consecutiveFullyKnown = 0;
 
   log(`Loading comments for ${postsWithComments.length} posts via permalinks...`);
 
@@ -561,11 +493,42 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
           for (const c of deduped) {
             log(`      💬 [${c.commentId || '?'}] ${c.authorName} (${c.timestamp || '?'}): ${c.commentText.slice(0, 100)}`);
           }
+
+          // Check if post is known AND all comments are known → early stop
+          if (seenData) {
+            const postKnown = seenData.ids.has(post.postId);
+            const allCommentsKnown = deduped.every(c => c.commentId && seenData.commentIds.has(c.commentId));
+            if (postKnown && allCommentsKnown) {
+              consecutiveFullyKnown++;
+              log(`    Post + all comments already seen (${consecutiveFullyKnown} consecutive)`);
+              if (consecutiveFullyKnown >= 2) {
+                log(`  Stopping — ${consecutiveFullyKnown} consecutive fully-known posts`);
+                break;
+              }
+            } else {
+              consecutiveFullyKnown = 0;
+            }
+            // Mark comments as seen
+            for (const c of deduped) {
+              if (c.commentId) seenData.commentIds.add(c.commentId);
+            }
+          }
         } else {
           log(`    ${comments.length} articles found but none with comment_id — likely sidebar posts`);
         }
       } else {
         log(`    No comments found`);
+        // Post with no comments — check if post itself is known
+        if (seenData && seenData.ids.has(post.postId)) {
+          consecutiveFullyKnown++;
+          log(`    Post already seen, no new comments (${consecutiveFullyKnown} consecutive)`);
+          if (consecutiveFullyKnown >= 2) {
+            log(`  Stopping — ${consecutiveFullyKnown} consecutive fully-known posts`);
+            break;
+          }
+        } else {
+          consecutiveFullyKnown = 0;
+        }
       }
     } catch (e) {
       log(`    Error loading post ${post.postId}: ${e.message}`);
@@ -661,7 +624,7 @@ async function scrape() {
       log(`Feed extraction: ${allPosts.length} unique posts`);
 
       // Load comments by visiting each post's permalink
-      const commentsByPost = await loadCommentsViaPermalinks(page, allPosts);
+      const commentsByPost = await loadCommentsViaPermalinks(page, allPosts, null);
 
       // Merge comments into posts
       for (const post of allPosts) {
@@ -805,13 +768,14 @@ async function scrape() {
       }
     }
     log(`Loading comments for ${postsForComments.length} posts...`);
-    const commentsByPost = await loadCommentsViaPermalinks(page, postsForComments);
+    const commentsByPost = await loadCommentsViaPermalinks(page, postsForComments, seenData);
 
     // Add comments to allExtracted
     for (const [postId, comments] of commentsByPost) {
       for (let i = 0; i < comments.length; i++) {
         const c = comments[i];
         if (!c.commentText) continue;
+        if (c.commentId) seenData.commentIds.add(c.commentId);
         allExtracted.push({
           postId: c.commentId || `${postId}-c${i}`,
           authorName: c.authorName || 'Unknown',
