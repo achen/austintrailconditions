@@ -162,77 +162,145 @@ async function fetchTrailStatuses() {
 // ── GraphQL response parser ──────────────────────────────────────────
 
 /**
- * Recursively search a nested object for nodes that look like Facebook posts.
- * Facebook's GraphQL responses are deeply nested and vary, so we search
- * for objects that have story/message/text fields.
+ * Pick the best stable ID for a story node.
+ * Prefers numeric IDs over base64 opaque IDs.
  */
-function findPostNodes(obj, results = [], depth = 0) {
-  if (!obj || typeof obj !== 'object' || depth > 20) return results;
+function pickBestId(story) {
+  // 1) Numeric top-level post ID from feedback
+  const topLevel = story?.feedback?.associated_group?.top_level_post_id;
+  if (topLevel && /^\d+$/.test(String(topLevel))) return String(topLevel);
 
-  // A "story" node typically has: id, message, created_time, actors
-  if (obj.message && obj.message.text && typeof obj.message.text === 'string') {
-    // This looks like a post or comment with text
-    results.push(obj);
+  // 2) post_id field directly on story
+  if (story?.post_id && /^\d+$/.test(String(story.post_id))) return String(story.post_id);
+
+  // 3) Try to decode numeric ID from base64 story ID
+  if (story?.id) {
+    try {
+      const decoded = Buffer.from(story.id, 'base64').toString('utf-8');
+      const match = decoded.match(/(\d{10,})/);
+      if (match) return match[1];
+    } catch {}
+    // If story.id is already numeric, use it
+    if (/^\d+$/.test(String(story.id))) return String(story.id);
   }
 
-  // Recurse into arrays and objects
-  if (Array.isArray(obj)) {
-    for (const item of obj) findPostNodes(item, results, depth + 1);
-  } else {
-    for (const key of Object.keys(obj)) {
-      findPostNodes(obj[key], results, depth + 1);
-    }
-  }
-
-  return results;
+  // 4) Last resort
+  return String(story?.id || 'gql-' + Date.now());
 }
 
 /**
- * Extract post data from a GraphQL response body.
- * Returns array of { postId, authorName, postText, comments[] }
+ * Pick the author name from a story node.
+ * FB hides it in several places depending on the story variant.
+ */
+function pickAuthor(story) {
+  return (
+    story?.actors?.[0]?.name ||
+    story?.comet_sections?.context_layout?.story?.comet_sections?.actor_photo?.story?.actors?.[0]?.name ||
+    story?.comet_sections?.context_layout?.story?.actors?.[0]?.name ||
+    findAuthorDeep(story, 0) ||
+    null
+  );
+}
+
+/** Recursively search for author name, limited depth */
+function findAuthorDeep(obj, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 6) return null;
+  if (obj.actors && Array.isArray(obj.actors) && obj.actors[0]?.name) return obj.actors[0].name;
+  if (obj.author?.name) return obj.author.name;
+  if ((obj.__typename === 'User' || obj.__typename === 'Page') && obj.name) return obj.name;
+
+  for (const key of ['comet_sections', 'context_layout', 'story', 'content', 'actor_photo']) {
+    if (obj[key]) {
+      const found = findAuthorDeep(obj[key], depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract posts from Facebook's GraphQL group_feed structure.
+ * Dedupes by author+text to eliminate wrapper/reshared story duplicates.
  */
 function extractPostsFromGraphQL(data) {
-  const nodes = findPostNodes(data);
   const posts = [];
   const seen = new Set();
 
-  for (const node of nodes) {
-    const text = node.message?.text;
-    if (!text || text.length < 5) continue;
+  const edges = findGroupFeedEdges(data);
 
-    // Try to get post ID
-    const postId = node.post_id || node.id || node.legacy_token || null;
-    if (postId && seen.has(postId)) continue;
-    if (postId) seen.add(postId);
+  for (const edge of edges) {
+    const story = edge.node || edge;
+    if (!story || story.__typename !== 'Story') continue;
 
-    // Try to get author
-    const actors = node.actors || node.author || [];
-    let authorName = 'Unknown';
-    if (Array.isArray(actors) && actors.length > 0) {
-      authorName = actors[0].name || actors[0].__typename || 'Unknown';
-    } else if (actors && actors.name) {
-      authorName = actors.name;
-    }
+    const postText = story.message?.text;
+    if (!postText || postText.length < 3) continue;
 
-    // Try to get comments
-    const comments = [];
-    const feedbackNode = node.feedback || node.story_ufi_container || null;
-    if (feedbackNode) {
-      const commentNodes = findPostNodes(feedbackNode);
-      for (const cn of commentNodes) {
-        if (cn === node) continue; // skip self
-        const cText = cn.message?.text || cn.body?.text;
-        if (!cText) continue;
-        const cAuthor = cn.author?.name || (cn.actors?.[0]?.name) || 'Unknown';
-        const cId = cn.id || cn.legacy_token || null;
-        comments.push({ commentId: cId, authorName: cAuthor, commentText: cText });
-      }
-    }
+    const author = pickAuthor(story) || 'Unknown';
+    const postId = pickBestId(story);
 
-    posts.push({ postId, authorName, postText: text, comments });
+    // Dedup by author + first 120 chars of text
+    const key = author + '|' + postText.slice(0, 120);
+    if (seen.has(key)) continue;
+    // Also dedup by just text (catches Unknown author duplicates)
+    const textKey = postText.slice(0, 120).toLowerCase();
+    if (seen.has(textKey)) continue;
+    seen.add(key);
+    seen.add(textKey);
+
+    const comments = extractCommentsFromStory(story);
+    posts.push({ postId, authorName: author, postText, comments });
   }
 
   return posts;
+}
+
+/** Recursively find group_feed.edges arrays in the data */
+function findGroupFeedEdges(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 15) return [];
+  if (obj.group_feed && obj.group_feed.edges) return obj.group_feed.edges;
+
+  let results = [];
+  if (Array.isArray(obj)) {
+    for (const item of obj) results = results.concat(findGroupFeedEdges(item, depth + 1));
+  } else {
+    for (const key of Object.keys(obj)) results = results.concat(findGroupFeedEdges(obj[key], depth + 1));
+  }
+  return results;
+}
+
+/** Extract comments from a story's feedback structure */
+function extractCommentsFromStory(story) {
+  const comments = [];
+  const feedback = story.feedback || story.comet_sections?.feedback;
+  if (!feedback) return comments;
+  findCommentNodes(feedback, comments, new Set());
+  return comments;
+}
+
+function findCommentNodes(obj, results, seenTexts, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 15) return;
+
+  if ((obj.__typename === 'Comment' || obj.body?.text) && !obj.group_feed) {
+    const text = obj.body?.text || obj.message?.text;
+    if (text && text.length >= 1) {
+      const fp = text.slice(0, 60).toLowerCase();
+      if (!seenTexts.has(fp)) {
+        seenTexts.add(fp);
+        const author = obj.author?.name || obj.actors?.[0]?.name || 'Unknown';
+        const commentId = obj.id || obj.legacy_token || null;
+        results.push({ commentId, authorName: author, commentText: text });
+      }
+    }
+  }
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) findCommentNodes(item, results, seenTexts, depth + 1);
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (key === 'message' || key === 'body') continue;
+      findCommentNodes(obj[key], results, seenTexts, depth + 1);
+    }
+  }
 }
 
 // ── Main scrape function ─────────────────────────────────────────────
