@@ -89,16 +89,17 @@ export async function GET(request: Request) {
       }
     }
 
-    // 6. Auto-replace offline stations with nearby working ones
+    // 6. Track offline stations for notification, but skip auto-replace
+    // to conserve API calls (WU free tier: 1,500/day).
+    // Auto-replace can be triggered manually or enabled via WEATHER_AUTO_REPLACE=true.
     const offlineStations = stationIds.filter(
       (sid) => !allObservations.some((o) => o.stationId === sid)
     );
     let replacements: Awaited<ReturnType<typeof autoReplaceOfflineStations>> = [];
-    if (offlineStations.length > 0) {
+    if (offlineStations.length > 0 && process.env.WEATHER_AUTO_REPLACE === 'true') {
       replacements = await autoReplaceOfflineStations(config.weatherUnderground.apiKey);
       if (replacements.length > 0) {
         console.log(`Replaced ${replacements.length} offline station(s):`, replacements);
-        // Fetch observations from the new stations
         for (const r of replacements) {
           try {
             const obs = await fetchObservations(r.newStation, config.weatherUnderground.apiKey);
@@ -113,24 +114,27 @@ export async function GET(request: Request) {
       }
     }
 
-    // 7. Cross-validate precipitation — check for broken rain gauges
-    const trailsWithCoords = await sql`
-      SELECT primary_station_id, latitude, longitude FROM trails
-      WHERE is_archived = false AND updates_enabled = true
-        AND latitude IS NOT NULL AND longitude IS NOT NULL
-    `;
-    for (const obs of allObservations) {
-      const trail = trailsWithCoords.rows.find(
-        (t) => t.primary_station_id === obs.stationId
-      );
-      if (!trail) continue;
-      const lat = parseFloat(trail.latitude as string);
-      const lon = parseFloat(trail.longitude as string);
-      const result = await crossValidatePrecipitation(
-        obs.stationId, obs.precipitationIn, lat, lon, config.weatherUnderground.apiKey
-      );
-      if (result.adjusted) {
-        obs.precipitationIn = result.precipIn;
+    // 7. Cross-validation disabled by default to conserve API calls.
+    // Enable via WEATHER_CROSS_VALIDATE=true when needed.
+    if (process.env.WEATHER_CROSS_VALIDATE === 'true') {
+      const trailsWithCoords = await sql`
+        SELECT primary_station_id, latitude, longitude FROM trails
+        WHERE is_archived = false AND updates_enabled = true
+          AND latitude IS NOT NULL AND longitude IS NOT NULL
+      `;
+      for (const obs of allObservations) {
+        const trail = trailsWithCoords.rows.find(
+          (t) => t.primary_station_id === obs.stationId
+        );
+        if (!trail) continue;
+        const lat = parseFloat(trail.latitude as string);
+        const lon = parseFloat(trail.longitude as string);
+        const result = await crossValidatePrecipitation(
+          obs.stationId, obs.precipitationIn, lat, lon, config.weatherUnderground.apiKey
+        );
+        if (result.adjusted) {
+          obs.precipitationIn = result.precipIn;
+        }
       }
     }
 
