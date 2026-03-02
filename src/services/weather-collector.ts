@@ -167,15 +167,8 @@ export async function shouldPollFrequently(): Promise<boolean> {
 
   return !!dryingTrailsResult.rows[0]?.has_drying_trails;
 }
+
 /**
- * Check the WU 5-day forecast for Austin to find when rain is expected.
- * 1. Calls the 5-day daily forecast (1 API call) to see if rain >= 30% in any daypart.
- * 2. If rain found, calls the hourly forecast (1 more API call) to find the exact hour.
- * Returns when to start hourly station polling (4 hours before rain).
- *
- * Total: 1 API call on dry days, 2 API calls when rain is coming.
- */
-export /**
  * Check the WU 5-day daily forecast for Austin to determine if/when rain is expected.
  *
  * The PWS contributor API only provides the 5-day daily forecast (not hourly).
