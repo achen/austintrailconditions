@@ -453,12 +453,15 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
       // Extract comments from the DOM
       const comments = await page.evaluate(() => {
         const results = [];
-        // Comments are div[role="article"] — first one is the post, rest are comments
-        const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+        // The main post is the first div[role="article"].
+        // Its comments are nested div[role="article"] elements INSIDE it.
+        const mainArticle = document.querySelector('div[role="article"]');
+        if (!mainArticle) return results;
 
-        for (let idx = 1; idx < articles.length; idx++) {
-          const article = articles[idx];
+        // Find comment articles nested within the main post article
+        const commentArticles = mainArticle.querySelectorAll('div[role="article"]');
 
+        for (const article of commentArticles) {
           // Author: first link with a name
           let author = 'Unknown';
           const authorLink = article.querySelector('a[role="link"] span');
