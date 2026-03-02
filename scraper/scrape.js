@@ -483,23 +483,11 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
       // Extract comments from the DOM
       const comments = await page.evaluate(() => {
         const results = [];
-        // All comment-like elements on the page
         const articles = Array.from(document.querySelectorAll('div[role="article"]'));
         if (articles.length <= 1) return results;
 
-        // The first article is the main post — grab its text to filter out unrelated articles
-        const mainText = (articles[0].querySelector('div[dir="auto"]')?.textContent || '').slice(0, 60).toLowerCase();
-
-        // Comments are articles after the first one that are INSIDE the same scrollable container
-        // Get the parent of the first article to scope our search
-        const mainParent = articles[0].parentElement;
-
         for (let idx = 1; idx < articles.length; idx++) {
           const article = articles[idx];
-
-          // Only include articles that share the same parent container as the main post
-          // This filters out sidebar/recommended post articles
-          if (mainParent && !mainParent.contains(article)) continue;
 
           // Author
           let author = 'Unknown';
@@ -547,8 +535,9 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
             if (match) commentId = match[1];
           }
 
+          // hasCommentId helps us distinguish real comments from sidebar posts
           if (text) {
-            results.push({ commentId, authorName: author, commentText: text, timestamp });
+            results.push({ commentId, authorName: author, commentText: text, timestamp, hasCommentId: !!commentId });
           }
         }
         return results;
@@ -558,16 +547,22 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
         const seen = new Set();
         const deduped = [];
         for (const c of comments) {
+          // Only keep entries that have a comment_id — filters out sidebar/recommended posts
+          if (!c.hasCommentId) continue;
           const fp = c.commentText.slice(0, 60).toLowerCase();
           if (!seen.has(fp)) {
             seen.add(fp);
-            deduped.push({ commentId: c.commentId || null, authorName: c.authorName, commentText: c.commentText, timestamp: c.timestamp || null });
+            deduped.push({ commentId: c.commentId, authorName: c.authorName, commentText: c.commentText, timestamp: c.timestamp || null });
           }
         }
-        commentsByPost.set(post.postId, deduped);
-        log(`    Found ${deduped.length} comment(s)`);
-        for (const c of deduped) {
-          log(`      💬 [${c.commentId || '?'}] ${c.authorName} (${c.timestamp || '?'}): ${c.commentText.slice(0, 100)}`);
+        if (deduped.length > 0) {
+          commentsByPost.set(post.postId, deduped);
+          log(`    Found ${deduped.length} comment(s) (${comments.length} total articles)`);
+          for (const c of deduped) {
+            log(`      💬 [${c.commentId || '?'}] ${c.authorName} (${c.timestamp || '?'}): ${c.commentText.slice(0, 100)}`);
+          }
+        } else {
+          log(`    ${comments.length} articles found but none with comment_id — likely sidebar posts`);
         }
       } else {
         log(`    No comments found`);
