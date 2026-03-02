@@ -41,7 +41,6 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const ALERT_EMAIL = process.env.ALERT_EMAIL || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'info@austintrailconditions.com';
 
-const SEEN_FILE = path.join(__dirname, '.seen-posts.json');
 const SOURCE_PROFILE = process.env.CHROME_PROFILE || path.join(os.homedir(), '.config', 'google-chrome');
 const SCRAPER_PROFILE = path.join(__dirname, '.chrome-profile');
 
@@ -97,41 +96,32 @@ function syncProfile() {
   }
 }
 
-// ── Seen posts ───────────────────────────────────────────────────────
+// ── Seen posts (via API) ─────────────────────────────────────────────
 
-function loadSeenPosts() {
+/**
+ * Check which post/comment IDs already exist in the database via the API.
+ * Returns { seenPostIds: Set, seenCommentIds: Set }
+ */
+async function checkSeenIds(postIds, commentIds) {
   try {
-    if (fs.existsSync(SEEN_FILE)) {
-      const data = JSON.parse(fs.readFileSync(SEEN_FILE, 'utf-8'));
-      return {
-        ids: new Set(data.postIds || []),
-        fingerprints: new Set(data.fingerprints || []),
-        commentIds: new Set(data.commentIds || []),
-      };
+    const res = await fetch(`${API_URL}/api/scrape/seen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_SECRET}` },
+      body: JSON.stringify({ postIds: Array.from(postIds), commentIds: Array.from(commentIds) }),
+    });
+    if (!res.ok) {
+      log(`Seen-check API error: ${res.status}`);
+      return { seenPostIds: new Set(), seenCommentIds: new Set() };
     }
-  } catch { log('Could not load seen posts, starting fresh.'); }
-  return { ids: new Set(), fingerprints: new Set(), commentIds: new Set() };
-}
-
-function saveSeenPosts(seenData) {
-  const ids = Array.from(seenData.ids).slice(-500);
-  const fingerprints = Array.from(seenData.fingerprints).slice(-500);
-  const commentIds = Array.from(seenData.commentIds).slice(-2000);
-  fs.writeFileSync(SEEN_FILE, JSON.stringify({ postIds: ids, fingerprints, commentIds, updatedAt: new Date().toISOString() }));
-}
-
-function makeFingerprint(text) {
-  return (text || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
-}
-
-function isKnownPost(seenData, postId, fingerprint) {
-  if (seenData.ids.has(postId)) return true;
-  if (!fingerprint || fingerprint.length === 0) return false;
-  const fpShort = fingerprint.slice(0, 40);
-  for (const saved of seenData.fingerprints) {
-    if (saved.startsWith(fpShort) || fingerprint.startsWith(saved.slice(0, 40))) return true;
+    const data = await res.json();
+    return {
+      seenPostIds: new Set(data.seenPostIds || []),
+      seenCommentIds: new Set(data.seenCommentIds || []),
+    };
+  } catch (e) {
+    log(`Seen-check failed: ${e.message}`);
+    return { seenPostIds: new Set(), seenCommentIds: new Set() };
   }
-  return false;
 }
 
 // ── Email ────────────────────────────────────────────────────────────
@@ -360,7 +350,7 @@ function findCommentNodes(obj, results, seen, depth) {
  * FB renders comments server-side — GraphQL interception doesn't capture them.
  * Returns a Map of postId -> [{commentId, authorName, commentText}]
  */
-async function loadCommentsViaPermalinks(page, posts, seenData = null, groupId = '325119181430845') {
+async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845') {
   const commentsByPost = new Map();
   const postsWithComments = posts.filter(p => p.postId && /^\d+$/.test(p.postId));
   let consecutiveFullyKnown = 0;
@@ -494,34 +484,31 @@ async function loadCommentsViaPermalinks(page, posts, seenData = null, groupId =
             log(`      💬 [${c.commentId || '?'}] ${c.authorName} (${c.timestamp || '?'}): ${c.commentText.slice(0, 100)}`);
           }
 
-          // Check if post is known AND all comments are known → early stop
-          if (seenData) {
-            const postKnown = seenData.ids.has(post.postId);
-            const allCommentsKnown = deduped.every(c => c.commentId && seenData.commentIds.has(c.commentId));
-            if (postKnown && allCommentsKnown) {
-              consecutiveFullyKnown++;
-              log(`    Post + all comments already seen (${consecutiveFullyKnown} consecutive)`);
-              if (consecutiveFullyKnown >= 2) {
-                log(`  Stopping — ${consecutiveFullyKnown} consecutive fully-known posts`);
-                break;
-              }
-            } else {
-              consecutiveFullyKnown = 0;
+          // Check against DB if post + all comments are already stored
+          const commentIdsToCheck = deduped.filter(c => c.commentId).map(c => c.commentId);
+          const { seenPostIds, seenCommentIds } = await checkSeenIds([post.postId], commentIdsToCheck);
+          const postKnown = seenPostIds.has(post.postId);
+          const allCommentsKnown = commentIdsToCheck.length > 0 && commentIdsToCheck.every(id => seenCommentIds.has(id));
+          if (postKnown && allCommentsKnown) {
+            consecutiveFullyKnown++;
+            log(`    Post + all comments already in DB (${consecutiveFullyKnown} consecutive)`);
+            if (consecutiveFullyKnown >= 2) {
+              log(`  Stopping — ${consecutiveFullyKnown} consecutive fully-known posts`);
+              break;
             }
-            // Mark comments as seen
-            for (const c of deduped) {
-              if (c.commentId) seenData.commentIds.add(c.commentId);
-            }
+          } else {
+            consecutiveFullyKnown = 0;
           }
         } else {
           log(`    ${comments.length} articles found but none with comment_id — likely sidebar posts`);
         }
       } else {
         log(`    No comments found`);
-        // Post with no comments — check if post itself is known
-        if (seenData && seenData.ids.has(post.postId)) {
+        // Post with no comments — check if post itself is in DB
+        const { seenPostIds } = await checkSeenIds([post.postId], []);
+        if (seenPostIds.has(post.postId)) {
           consecutiveFullyKnown++;
-          log(`    Post already seen, no new comments (${consecutiveFullyKnown} consecutive)`);
+          log(`    Post already in DB, no comments (${consecutiveFullyKnown} consecutive)`);
           if (consecutiveFullyKnown >= 2) {
             log(`  Stopping — ${consecutiveFullyKnown} consecutive fully-known posts`);
             break;
@@ -624,7 +611,7 @@ async function scrape() {
       log(`Feed extraction: ${allPosts.length} unique posts`);
 
       // Load comments by visiting each post's permalink
-      const commentsByPost = await loadCommentsViaPermalinks(page, allPosts, null);
+      const commentsByPost = await loadCommentsViaPermalinks(page, allPosts);
 
       // Merge comments into posts
       for (const post of allPosts) {
@@ -658,17 +645,11 @@ async function scrape() {
     log(`Feed load: ${graphqlResponses.length} GraphQL responses total.`);
 
     // ── Extract posts from all GraphQL data so far ─────────────────
-    const seenData = loadSeenPosts();
-    log(`Loaded ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
-    const hasPriorData = seenData.ids.size > 0 || seenData.fingerprints.size > 0;
-
     const allExtracted = [];
     const processedPostIds = new Set();
-    let consecutiveKnown = 0;
-    let foundKnown = false;
     let scrollCount = 0;
 
-    function processGraphQLData() {
+    function extractNewPosts() {
       for (const response of graphqlResponses) {
         const posts = extractPostsFromGraphQL(response);
         for (const post of posts) {
@@ -676,22 +657,12 @@ async function scrape() {
           if (processedPostIds.has(postId)) continue;
           processedPostIds.add(postId);
 
-          const fp = makeFingerprint(post.postText);
-          // Also check fingerprint dedup
+          // Fingerprint dedup
+          const fp = (post.postText || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
           if (fp && processedPostIds.has('fp:' + fp)) continue;
           if (fp) processedPostIds.add('fp:' + fp);
 
-          const known = hasPriorData && isKnownPost(seenData, postId, fp);
-          const commentCount = (post.comments || []).length;
-
-          log(`  ${known ? 'KNOWN' : 'NEW  '} [${postId}] ${post.authorName}: ${post.postText.slice(0, 120)}`);
-          log(`         ${commentCount} comment(s)`);
-          for (const c of post.comments) {
-            log(`         💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
-          }
-
-          seenData.ids.add(postId);
-          if (fp) seenData.fingerprints.add(fp);
+          log(`  [${postId}] ${post.authorName}: ${post.postText.slice(0, 120)}`);
 
           allExtracted.push({
             postId,
@@ -699,37 +670,16 @@ async function scrape() {
             postText: post.postText.slice(0, 2000),
             timestamp: post.timestamp || new Date().toISOString(),
           });
-          for (let i = 0; i < (post.comments || []).length; i++) {
-            const c = post.comments[i];
-            if (!c.commentText) continue;
-            allExtracted.push({
-              postId: c.commentId || `${postId}-c${i}`,
-              authorName: c.authorName || 'Unknown',
-              postText: c.commentText.slice(0, 2000),
-              timestamp: post.timestamp || new Date().toISOString(),
-            });
-          }
-
-          if (known) {
-            consecutiveKnown++;
-            if (consecutiveKnown >= 2) {
-              log(`Hit ${consecutiveKnown} consecutive known posts — stopping.`);
-              foundKnown = true;
-              return;
-            }
-          } else {
-            consecutiveKnown = 0;
-          }
         }
       }
     }
 
     // Process initial page load data
     log('Processing initial GraphQL data...');
-    processGraphQLData();
+    extractNewPosts();
 
     // ── Scroll loop to load more posts ─────────────────────────────
-    for (let round = 0; round < MAX_SCROLLS && !foundKnown; round++) {
+    for (let round = 0; round < MAX_SCROLLS; round++) {
       const beforeCount = graphqlResponses.length;
       await page.evaluate((amt) => window.scrollBy(0, amt), 300 + Math.floor(Math.random() * 400));
       scrollCount++;
@@ -743,15 +693,11 @@ async function scrape() {
           setTimeout(check, 500);
         };
         setTimeout(check, 500);
-        setTimeout(resolve, 10000); // timeout after 10s
+        setTimeout(resolve, 10000);
       });
 
       log(`  ${graphqlResponses.length - beforeCount} new GraphQL responses.`);
-      processGraphQLData();
-    }
-
-    if (!foundKnown && hasPriorData) {
-      log(`Hit max scrolls (${MAX_SCROLLS}) without finding enough known posts.`);
+      extractNewPosts();
     }
 
     // ── Load comments via post permalinks ─────────────────────────
@@ -768,14 +714,13 @@ async function scrape() {
       }
     }
     log(`Loading comments for ${postsForComments.length} posts...`);
-    const commentsByPost = await loadCommentsViaPermalinks(page, postsForComments, seenData);
+    const commentsByPost = await loadCommentsViaPermalinks(page, postsForComments);
 
     // Add comments to allExtracted
     for (const [postId, comments] of commentsByPost) {
       for (let i = 0; i < comments.length; i++) {
         const c = comments[i];
         if (!c.commentText) continue;
-        if (c.commentId) seenData.commentIds.add(c.commentId);
         allExtracted.push({
           postId: c.commentId || `${postId}-c${i}`,
           authorName: c.authorName || 'Unknown',
@@ -784,9 +729,6 @@ async function scrape() {
         });
       }
     }
-
-    saveSeenPosts(seenData);
-    log(`Saved ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
 
     const postCount = allExtracted.filter(p => !p.postId.includes('-c')).length;
     const commentCount = allExtracted.length - postCount;
