@@ -362,66 +362,51 @@ async function loadCommentsForPosts(page, graphqlResponses, maxPosts = 20) {
   await page.evaluate(() => window.scrollTo(0, 0));
   await randomDelay(500, 800);
 
-  // Debug: dump what clickable elements exist in the first article
+  // Debug: find "X comments" spans on the page
   const debugInfo = await page.evaluate(() => {
-    const articles = Array.from(document.querySelectorAll('div[role="article"]'));
-    if (articles.length === 0) return 'No articles found';
-    const first = articles[0];
-    const clickables = first.querySelectorAll('a, span[role="button"], div[role="button"], [role="link"]');
-    return Array.from(clickables).slice(0, 30).map(el => {
-      const text = (el.textContent || '').trim().slice(0, 60);
-      const tag = el.tagName;
-      const role = el.getAttribute('role') || '';
-      const aria = el.getAttribute('aria-label') || '';
-      return `<${tag} role="${role}" aria="${aria}"> ${text}`;
-    });
+    const spans = document.querySelectorAll('span');
+    const matches = [];
+    for (const el of spans) {
+      // Check only direct text (not nested children text)
+      const directText = Array.from(el.childNodes)
+        .filter(n => n.nodeType === 3)
+        .map(n => n.textContent.trim())
+        .join('');
+      const fullText = (el.textContent || '').trim();
+      if (/^\d+\s+comments?$/i.test(fullText) && fullText.length < 20) {
+        const rect = el.getBoundingClientRect();
+        // Find the closest clickable ancestor
+        const btn = el.closest('div[role="button"]');
+        const btnRect = btn ? btn.getBoundingClientRect() : null;
+        matches.push({ text: fullText, y: Math.round(rect.y), visible: rect.width > 0, hasBtn: !!btn, btnY: btnRect ? Math.round(btnRect.y) : null });
+      }
+    }
+    return matches;
   });
-  log(`DEBUG article clickables: ${JSON.stringify(debugInfo, null, 2)}`);
+  log(`DEBUG "X comments" spans: ${JSON.stringify(debugInfo)}`);
 
-  // Find all comment links in the feed articles
+  // Find all "X comments" spans and their clickable parent buttons
   const commentLinks = await page.evaluate(() => {
-    const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+    const spans = Array.from(document.querySelectorAll('span'));
     const links = [];
-    for (const article of articles) {
-      // Search broadly for any clickable element mentioning "comment(s)"
-      const candidates = article.querySelectorAll('a, span, div[role="button"], [role="link"]');
-      let found = false;
-      for (const el of candidates) {
-        const text = (el.textContent || '').trim().toLowerCase();
-        // Match "X comments", "1 comment", "View X more comments", etc.
-        if (/\d+\s+comments?/.test(text) || /^comments?$/.test(text)) {
-          const rect = el.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0 && rect.y > 0) {
-            links.push({
-              x: rect.x + rect.width / 2,
-              y: rect.y + rect.height / 2,
-              text: text.slice(0, 40),
-              articleIdx: links.length,
-            });
-            found = true;
-            break;
-          }
-        }
-      }
-      // Also try aria-label containing "comment"
-      if (!found) {
-        const ariaEls = article.querySelectorAll('[aria-label*="comment" i], [aria-label*="Comment" i]');
-        for (const el of ariaEls) {
-          const label = el.getAttribute('aria-label') || '';
-          if (/\d+\s+comments?/i.test(label) || /^comments?$/i.test(label)) {
-            const rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0 && rect.y > 0) {
-              links.push({
-                x: rect.x + rect.width / 2,
-                y: rect.y + rect.height / 2,
-                text: label.slice(0, 40),
-                articleIdx: links.length,
-              });
-              break;
-            }
-          }
-        }
-      }
+    const seenY = new Set(); // dedup by approximate Y position
+    for (const span of spans) {
+      const text = (span.textContent || '').trim();
+      if (!/^\d+\s+comments?$/i.test(text) || text.length > 20) continue;
+      // Find the clickable ancestor (div[role="button"])
+      const btn = span.closest('div[role="button"]');
+      const target = btn || span;
+      const rect = target.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      // Dedup: skip if we already have a link within 50px of this Y
+      const yKey = Math.round(rect.y / 50);
+      if (seenY.has(yKey)) continue;
+      seenY.add(yKey);
+      links.push({
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+        text,
+      });
     }
     return links;
   });
@@ -441,21 +426,21 @@ async function loadCommentsForPosts(page, graphqlResponses, maxPosts = 20) {
 
     // Re-find the link position after scroll
     const freshPos = await page.evaluate((idx) => {
-      const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+      const spans = Array.from(document.querySelectorAll('span'));
+      const seenY = new Set();
       let count = 0;
-      for (const article of articles) {
-        const allLinks = article.querySelectorAll('a[role="link"], span[role="button"]');
-        for (const link of allLinks) {
-          const text = (link.textContent || '').trim().toLowerCase();
-          if (/^\d+\s+comments?$/.test(text) || text === 'comment' || text === 'comments') {
-            const rect = link.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              if (count === idx) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-              count++;
-              break;
-            }
-          }
-        }
+      for (const span of spans) {
+        const text = (span.textContent || '').trim();
+        if (!/^\d+\s+comments?$/i.test(text) || text.length > 20) continue;
+        const btn = span.closest('div[role="button"]');
+        const target = btn || span;
+        const rect = target.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const yKey = Math.round(rect.y / 50);
+        if (seenY.has(yKey)) continue;
+        seenY.add(yKey);
+        if (count === idx) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        count++;
       }
       return null;
     }, i);
