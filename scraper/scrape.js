@@ -378,21 +378,8 @@ async function scrape() {
           const roughText = (article.textContent || '').replace(/\s+/g, ' ').trim();
           if (roughText.length < 10) continue;
 
-          // Clean the HTML: strip class, style, data-* attributes to reduce size
-          const clone = article.cloneNode(true);
-          for (const el of clone.querySelectorAll('*')) {
-            const attrs = Array.from(el.attributes);
-            for (const attr of attrs) {
-              if (attr.name === 'role' || attr.name === 'dir' || attr.name === 'href' || attr.name === 'alt') continue;
-              el.removeAttribute(attr.name);
-            }
-          }
-          // Remove script/style tags
-          for (const el of clone.querySelectorAll('script, style, svg, img')) el.remove();
-          const html = clone.innerHTML;
-
-          // Cap HTML size — if over 15KB, truncate (very long posts are rare)
-          const postHtml = html.length > 15000 ? html.slice(0, 15000) + '...[truncated]' : html;
+          // Send raw HTML — AI will parse it
+          const postHtml = article.innerHTML;
 
           // Post ID
           let postId = '';
