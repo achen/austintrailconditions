@@ -116,7 +116,7 @@ function buildSystemPrompt(knownTrails: string[], aliasMap?: Map<string, string>
   if (aliasMap && aliasMap.size > 0) {
     // Group aliases by parent trail
     const grouped = new Map<string, string[]>();
-    for (const [alias, parent] of aliasMap) {
+    for (const [alias, parent] of Array.from(aliasMap.entries())) {
       if (!grouped.has(parent)) grouped.set(parent, []);
       grouped.get(parent)!.push(alias);
     }
