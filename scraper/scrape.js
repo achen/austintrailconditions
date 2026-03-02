@@ -438,6 +438,36 @@ async function scrape() {
     let foundKnown = false;
     let scrollCount = 0;
 
+    // Wait for posts to actually render in the DOM
+    log('Waiting for posts to render...');
+    try {
+      // Try multiple selectors — Facebook changes their DOM structure
+      await Promise.race([
+        page.waitForSelector('div[role="article"]', { timeout: 15000 }),
+        page.waitForSelector('div[role="feed"] > div', { timeout: 15000 }),
+        page.waitForSelector('div[data-pagelet*="GroupFeed"]', { timeout: 15000 }),
+      ]).catch(() => {});
+      await randomDelay(3000, 4000); // extra buffer for lazy-loaded content
+    } catch (e) {
+      log('WARNING: Feed selector wait failed — continuing anyway.');
+    }
+
+    // Debug: check what selectors actually match
+    const domDebug = await page.evaluate(() => {
+      return {
+        articles: document.querySelectorAll('div[role="article"]').length,
+        feedDivs: document.querySelectorAll('div[role="feed"] > div').length,
+        feedExists: !!document.querySelector('div[role="feed"]'),
+        groupFeed: !!document.querySelector('div[data-pagelet*="GroupFeed"]'),
+        allDirAuto: document.querySelectorAll('div[dir="auto"]').length,
+        bodyTextSample: document.body.innerText.slice(0, 200),
+      };
+    });
+    log(`DEBUG DOM: articles=${domDebug.articles}, feedDivs=${domDebug.feedDivs}, feed=${domDebug.feedExists}, groupFeed=${domDebug.groupFeed}, dirAuto=${domDebug.allDirAuto}`);
+    if (domDebug.articles === 0) {
+      log(`DEBUG body sample: ${domDebug.bodyTextSample.replace(/\n/g, ' ').slice(0, 150)}`);
+    }
+
     // Extract post text fingerprints from visible top-level posts
     // Uses the SAME normalization as textFingerprint() so matches work
     const getVisiblePostSignatures = () => page.evaluate(() => {
