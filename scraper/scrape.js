@@ -530,7 +530,24 @@ async function loadCommentsForPosts(page, graphqlResponses, maxPosts = 20) {
       await page.keyboard.press('Escape');
       await randomDelay(300, 500);
 
-      log(`    +${graphqlResponses.length - beforeCount} GraphQL responses`);
+      const newResponses = graphqlResponses.slice(beforeCount);
+      log(`    +${newResponses.length} GraphQL responses`);
+
+      // DEBUG: dump each new response's typenames and first 3000 chars
+      for (let ri = 0; ri < newResponses.length; ri++) {
+        const resp = newResponses[ri];
+        const str = JSON.stringify(resp);
+        const typenames = new Set();
+        const findTN = (obj, d = 0) => {
+          if (!obj || typeof obj !== 'object' || d > 10) return;
+          if (obj.__typename) typenames.add(obj.__typename);
+          if (Array.isArray(obj)) { for (const item of obj) findTN(item, d + 1); }
+          else { for (const k of Object.keys(obj)) findTN(obj[k], d + 1); }
+        };
+        findTN(resp);
+        log(`    [resp ${ri}] ${str.length} chars, typenames: [${[...typenames].join(', ')}]`);
+        log(`    [resp ${ri}] DUMP: ${str.slice(0, 3000)}`);
+      }
     } else {
       // No comment link found in viewport — scroll down
       scrollPos += 600;
@@ -635,28 +652,7 @@ async function scrape() {
       log(`Feed extraction: ${allPosts.length} unique posts`);
 
       // Load comments for each post
-      const feedResponseCount = graphqlResponses.length;
       await loadCommentsForPosts(page, graphqlResponses);
-
-      // DEBUG: dump structure of comment-specific GraphQL responses
-      const commentResponses = graphqlResponses.slice(feedResponseCount);
-      log(`DEBUG: ${commentResponses.length} comment-specific GraphQL responses captured`);
-      for (let i = 0; i < Math.min(commentResponses.length, 5); i++) {
-        const resp = commentResponses[i];
-        const str = JSON.stringify(resp);
-        // Find all __typename values in this response
-        const typenames = new Set();
-        const findTypenames = (obj, d = 0) => {
-          if (!obj || typeof obj !== 'object' || d > 10) return;
-          if (obj.__typename) typenames.add(obj.__typename);
-          if (Array.isArray(obj)) { for (const item of obj) findTypenames(item, d + 1); }
-          else { for (const k of Object.keys(obj)) findTypenames(obj[k], d + 1); }
-        };
-        findTypenames(resp);
-        log(`  Response ${i}: ${str.length} chars, typenames: [${[...typenames].join(', ')}]`);
-        // Show first 3000 chars of the response
-        log(`  DUMP[${i}]: ${str.slice(0, 3000)}`);
-      }
 
       // Second pass: re-extract with comment data now available
       allPosts = [];
