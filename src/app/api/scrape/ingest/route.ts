@@ -50,7 +50,14 @@ export async function POST(request: Request) {
     const newPostIds = await storePosts(posts);
 
     let classified = 0;
-    const unmatchedPosts: Array<{ postId: string; text: string; classification: string }> = [];
+    const allClassified: Array<{
+      postId: string;
+      text: string;
+      classification: string;
+      confidence: number;
+      timestamp: string;
+      trails: string[];
+    }> = [];
 
     if (process.env.OPENAI_API_KEY) {
       const activeTrails = await listActive();
@@ -62,16 +69,14 @@ export async function POST(request: Request) {
         try {
           const result = await classify(post, knownTrailNames);
           classified++;
-          if (
-            (result.classification === 'dry' || result.classification === 'wet') &&
-            result.trailReferences.length === 0
-          ) {
-            unmatchedPosts.push({
-              postId: result.postId,
-              text: post.postText.slice(0, 200),
-              classification: result.classification,
-            });
-          }
+          allClassified.push({
+            postId: result.postId,
+            text: post.postText.slice(0, 200),
+            classification: result.classification,
+            confidence: result.confidenceScore,
+            timestamp: post.timestamp.toISOString(),
+            trails: result.trailReferences,
+          });
         } catch (err) {
           console.error(`Classification failed for ${post.postId}:`, err);
         }
@@ -80,13 +85,20 @@ export async function POST(request: Request) {
 
     const verifications = await applyVerifiedStatuses();
 
+    // Build a map of trail status changes from verifications
+    const statusChanges: Record<string, string> = {};
+    for (const v of verifications) {
+      statusChanges[v.postId] = `${v.trailName} → ${v.newStatus}`;
+    }
+
     return NextResponse.json({
       success: true,
       received: rawPosts.length,
       stored: newPostIds.size,
       classified,
       verified: verifications.length,
-      unmatchedPosts: unmatchedPosts.length > 0 ? unmatchedPosts : undefined,
+      allClassified: allClassified.length > 0 ? allClassified : undefined,
+      statusChanges: Object.keys(statusChanges).length > 0 ? statusChanges : undefined,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

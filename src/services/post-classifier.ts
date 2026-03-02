@@ -203,7 +203,21 @@ export async function classify(
     }
   }
 
-  const trailReferences = extractTrailNames(report.postText, knownTrails, aliasMap);
+  let trailReferences = extractTrailNames(report.postText, knownTrails, aliasMap);
+
+  // If this is a comment with no trail matches, inherit from the parent post
+  if (trailReferences.length === 0 && report.parentPostId) {
+    const parentResult = await sql`
+      SELECT trail_references FROM trail_reports
+      WHERE post_id = ${report.parentPostId}
+        AND trail_references IS NOT NULL
+        AND array_length(trail_references, 1) > 0
+      LIMIT 1
+    `;
+    if (parentResult.rows.length > 0) {
+      trailReferences = parentResult.rows[0].trail_references as string[];
+    }
+  }
 
   let classification: Classification;
   let confidenceScore: number;

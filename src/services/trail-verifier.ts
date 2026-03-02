@@ -76,6 +76,25 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
       // Skip if status is already the same
       if (currentStatus === newStatus) continue;
 
+      // Guard against stale "wet" reports: if there's been no rain in the
+      // last 7 days for this trail, a "wet" classification is almost certainly
+      // from an outdated post (e.g. extension scraped an old post with a
+      // fallback timestamp of "now"). Skip it.
+      if (classification === 'wet') {
+        const recentRain = await sql`
+          SELECT 1 FROM rain_events
+          WHERE trail_id = ${trailId}
+            AND (is_active = true OR end_timestamp > now() - interval '7 days')
+          LIMIT 1
+        `;
+        if (recentRain.rows.length === 0) {
+          console.log(
+            `Skipping stale "wet" report for "${trail.name as string}" (post ${postId}) — no rain in last 7 days`
+          );
+          continue;
+        }
+      }
+
       // Update trail status
       await sql`
         UPDATE trails

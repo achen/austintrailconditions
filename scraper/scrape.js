@@ -801,11 +801,44 @@ async function scrape() {
       return `<tr style="${style}"><td style="padding:4px 8px">${name}</td><td style="padding:4px 8px">${label}</td></tr>`;
     }).join('');
 
-    const unmatched = result.unmatchedPosts || [];
-    const unmatchedHtml = unmatched.length > 0
-      ? `<h3>⚠️ Unmatched (${unmatched.length})</h3>
+    const fbGroupId = '325119181430845';
+    function fbLink(postId) {
+      if (/^\d+$/.test(postId)) return `https://www.facebook.com/groups/${fbGroupId}/permalink/${postId}/`;
+      return null;
+    }
+    function fmtTime(ts) {
+      if (!ts) return '?';
+      return new Date(ts).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+    function classColor(c) {
+      if (c === 'dry') return 'green';
+      if (c === 'wet') return 'red';
+      if (c === 'inquiry') return '#b8860b';
+      return '#888';
+    }
+
+    const allClassified = result.allClassified || [];
+    const statusChanges = result.statusChanges || {};
+
+    const classifiedHtml = allClassified.length > 0
+      ? `<h3>📋 All Classified Posts (${allClassified.length})</h3>
          <table style="border-collapse:collapse;font-size:13px;width:100%">
-           ${unmatched.map(p => `<tr><td style="padding:4px 8px;color:${p.classification === 'dry' ? 'green' : 'red'}">${p.classification}</td><td style="padding:4px 8px">${p.text}</td></tr>`).join('')}
+           <tr style="background:#f0f0f0">
+             <th style="padding:4px 8px;text-align:left">Time</th>
+             <th style="padding:4px 8px;text-align:left">Class</th>
+             <th style="padding:4px 8px;text-align:left">Trails</th>
+             <th style="padding:4px 8px;text-align:left">Status Change</th>
+             <th style="padding:4px 8px;text-align:left">Post</th>
+           </tr>
+           ${allClassified.map(p => {
+             const ts = fmtTime(p.timestamp);
+             const trails = (p.trails && p.trails.length > 0) ? p.trails.join(', ') : '';
+             const link = fbLink(p.postId);
+             const textCell = link ? `<a href="${link}">${p.text}</a>` : p.text;
+             const change = statusChanges[p.postId] || '';
+             const changeStyle = change ? 'background:#fff3cd;font-weight:bold' : '';
+             return `<tr style="${changeStyle}"><td style="padding:4px 8px;white-space:nowrap">${ts}</td><td style="padding:4px 8px;color:${classColor(p.classification)}">${p.classification}</td><td style="padding:4px 8px">${trails}</td><td style="padding:4px 8px">${change}</td><td style="padding:4px 8px">${textCell}</td></tr>`;
+           }).join('')}
          </table>`
       : '';
 
@@ -816,7 +849,7 @@ async function scrape() {
     await sendEmail(subject,
       `<h3>Scraper Run</h3>
        <p>Posts: ${postCount} · Comments: ${commentCount} · Scrolls: ${scrollCount} · Stored: ${result.stored} · Classified: ${result.classified}</p>
-       ${unmatchedHtml}
+       ${classifiedHtml}
        <h3>Trail Statuses${changedCount > 0 ? ` (${changedCount} changed)` : ''}</h3>
        <table style="border-collapse:collapse;font-size:14px">
          <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Trail</th><th style="padding:4px 8px;text-align:left">Status</th></tr>
