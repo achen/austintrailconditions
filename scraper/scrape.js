@@ -43,7 +43,7 @@ if (fs.existsSync(envPath)) {
 const API_URL = (process.env.API_URL || 'https://austintrailconditions.com').replace(/\/$/, '');
 const API_SECRET = process.env.API_SECRET || '';
 const FB_GROUP = 'https://www.facebook.com/groups/325119181430845';
-const MAX_SCROLLS = parseInt(process.env.MAX_SCROLLS || '50', 10); // safety cap
+const MAX_SCROLLS = parseInt(process.env.MAX_SCROLLS || '5', 10); // safety cap
 const HEADLESS = process.env.HEADLESS !== 'false'; // default true
 
 // Email config (Resend)
