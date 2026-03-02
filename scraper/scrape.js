@@ -140,23 +140,39 @@ function randomDelay(minMs, maxMs) {
 }
 
 // ── Seen posts tracking ──────────────────────────────────────────────
+// We track both permalink-based IDs AND text fingerprints (first 100 chars)
+// because Facebook doesn't always render permalink links, so many posts
+// get synthetic "pup-" IDs that change every run.
+
+function textFingerprint(text) {
+  // Normalize: lowercase, collapse whitespace, take first 100 chars
+  return (text || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 100);
+}
 
 function loadSeenPosts() {
   try {
     if (fs.existsSync(SEEN_FILE)) {
       const data = JSON.parse(fs.readFileSync(SEEN_FILE, 'utf-8'));
-      return new Set(data.postIds || []);
+      return {
+        ids: new Set(data.postIds || []),
+        fingerprints: new Set(data.fingerprints || []),
+      };
     }
   } catch (e) {
     log('Could not load seen posts file, starting fresh.');
   }
-  return new Set();
+  return { ids: new Set(), fingerprints: new Set() };
 }
 
-function saveSeenPosts(postIds) {
-  // Keep last 500 IDs to avoid unbounded growth
-  const ids = Array.from(postIds).slice(-500);
-  fs.writeFileSync(SEEN_FILE, JSON.stringify({ postIds: ids, updatedAt: new Date().toISOString() }));
+function saveSeenPosts(seenData) {
+  // Keep last 500 of each to avoid unbounded growth
+  const ids = Array.from(seenData.ids).slice(-500);
+  const fingerprints = Array.from(seenData.fingerprints).slice(-500);
+  fs.writeFileSync(SEEN_FILE, JSON.stringify({
+    postIds: ids,
+    fingerprints,
+    updatedAt: new Date().toISOString(),
+  }));
 }
 
 // ── Email notification ───────────────────────────────────────────────
@@ -385,30 +401,48 @@ async function scrape() {
       log('Sort switch failed (non-fatal): ' + e.message);
     }
 
-    log('Scrolling until we find a known post...');
+    log('Scrolling until we find known posts...');
 
-    const seenPosts = loadSeenPosts();
-    log(`${seenPosts.size} previously seen post IDs loaded.`);
+    const seenData = loadSeenPosts();
+    log(`Loaded ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} text fingerprints.`);
+    const hasPriorData = seenData.ids.size > 0 || seenData.fingerprints.size > 0;
     let foundKnown = false;
     let scrollCount = 0;
 
-    // Function to extract just post IDs visible on page (lightweight check)
-    const getVisiblePostIds = () => page.evaluate(() => {
-      const ids = [];
+    // Extract post IDs AND text snippets from visible top-level posts
+    const getVisiblePostSignatures = () => page.evaluate(() => {
+      const results = [];
       const articles = document.querySelectorAll('div[role="article"]');
       for (const article of articles) {
+        // Skip nested articles (comments)
         if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+
+        // Try to get a permalink-based ID
+        let postId = null;
         const links = article.querySelectorAll('a[href]');
         for (const link of links) {
           const href = link.getAttribute('href') || '';
           const match = href.match(/\/permalink\/(\d+)|\/posts\/(\d+)|story_fbid=(\d+)/);
           if (match) {
-            ids.push(match[1] || match[2] || match[3]);
+            postId = match[1] || match[2] || match[3];
             break;
           }
         }
+
+        // Get text fingerprint (first 100 chars, normalized)
+        let text = '';
+        const textEls = article.querySelectorAll('div[dir="auto"]');
+        for (const el of textEls) {
+          const t = (el.textContent || '').trim();
+          if (t.length > 20 && t.length > text.length) text = t;
+        }
+        const fingerprint = text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 100);
+
+        if (postId || fingerprint.length >= 20) {
+          results.push({ postId, fingerprint });
+        }
       }
-      return ids;
+      return results;
     });
 
     while (scrollCount < MAX_SCROLLS) {
@@ -420,17 +454,25 @@ async function scrape() {
       log(`Scroll ${scrollCount}/${MAX_SCROLLS}, waiting ${Math.round(delay)}ms...`);
       await randomDelay(delay, delay + 500);
 
-      // Check if any visible posts are ones we've seen before
-      const visibleIds = await getVisiblePostIds();
-      const knownCount = visibleIds.filter(id => seenPosts.has(id)).length;
-      if (knownCount >= 2 && seenPosts.size > 0) {
-        log(`Found ${knownCount} known posts — caught up, stopping scroll.`);
-        foundKnown = true;
-        break;
+      // Check if any visible posts match by ID or text fingerprint
+      if (hasPriorData) {
+        const visible = await getVisiblePostSignatures();
+        let knownCount = 0;
+        for (const v of visible) {
+          if ((v.postId && seenData.ids.has(v.postId)) ||
+              (v.fingerprint && seenData.fingerprints.has(v.fingerprint))) {
+            knownCount++;
+          }
+        }
+        if (knownCount >= 2) {
+          log(`Found ${knownCount} known posts (by ID or text) — caught up, stopping scroll.`);
+          foundKnown = true;
+          break;
+        }
       }
     }
 
-    if (!foundKnown && seenPosts.size > 0) {
+    if (!foundKnown && hasPriorData) {
       log(`Hit max scrolls (${MAX_SCROLLS}) without finding a known post.`);
     }
 
@@ -476,11 +518,16 @@ async function scrape() {
       process.exit(0);
     }
 
-    // Save all post IDs we've seen for next run
-    const allPostIds = posts.filter(p => !p.isComment).map(p => p.postId);
-    for (const id of allPostIds) seenPosts.add(id);
-    saveSeenPosts(seenPosts);
-    log(`Saved ${seenPosts.size} seen post IDs.`);
+    // Save all post IDs and text fingerprints for next run
+    for (const p of posts) {
+      if (!p.isComment) {
+        seenData.ids.add(p.postId);
+        const fp = textFingerprint(p.postText);
+        if (fp.length >= 20) seenData.fingerprints.add(fp);
+      }
+    }
+    saveSeenPosts(seenData);
+    log(`Saved ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);
 
     // Snapshot trail statuses BEFORE ingest
     const beforeStatuses = await fetchTrailStatuses();
