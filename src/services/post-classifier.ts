@@ -78,7 +78,7 @@ export function extractTrailNames(
 
   // Check aliases — map back to parent trail name
   if (aliasMap) {
-    for (const [alias, parentTrail] of aliasMap) {
+    for (const [alias, parentTrail] of Array.from(aliasMap.entries())) {
       const lowerAlias = alias.toLowerCase();
 
       if (lowerText.includes(lowerAlias)) {
