@@ -95,9 +95,17 @@ export async function GET(request: Request) {
         name: r.name as string,
         status: r.condition_status as string,
       }));
+      const hoursUntilPoll = pollAfterUtc
+        ? (pollAfterUtc.getTime() - new Date().getTime()) / (1000 * 60 * 60)
+        : 0;
+      const modeLabel = !rainExpected
+        ? 'forecast-only'
+        : hoursUntilPoll > 20
+          ? `deferred (rain ~${Math.round(hoursUntilPoll + 4)}h away)`
+          : 'hourly (rain window open)';
       await notifyForecastCheck(
         rainExpected, forecast.maxChance, forecast.details, trailStatuses,
-        rainExpected ? 'hourly (when rain window opens)' : 'forecast-only'
+        modeLabel
       );
     }
 
