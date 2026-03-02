@@ -219,10 +219,51 @@ function extractPostsFromGraphQL(responseObj) {
     const authorName = story.feedback?.owning_profile?.name || pickAuthor(story) || 'Unknown';
     const comments = extractCommentsFromStory(story);
 
-    posts.push({ postId: String(postId), authorName, postText, comments });
+    const timestamp = extractTimestamp(story);
+    posts.push({ postId: String(postId), authorName, postText, timestamp, comments });
   }
 
   return posts;
+}
+
+/**
+ * Extract the post creation timestamp from a story node.
+ * FB stores it as a unix epoch (seconds) in various locations.
+ */
+function extractTimestamp(story) {
+  // Direct creation_time on the story
+  if (story?.creation_time) return new Date(story.creation_time * 1000).toISOString();
+
+  // Nested in comet_sections context
+  const ctxStory = story?.comet_sections?.context_layout?.story;
+  if (ctxStory?.creation_time) return new Date(ctxStory.creation_time * 1000).toISOString();
+
+  // In comet_sections → metadata
+  const metaStory = story?.comet_sections?.content?.story;
+  if (metaStory?.creation_time) return new Date(metaStory.creation_time * 1000).toISOString();
+
+  // Recursive fallback: find first creation_time in the story object
+  const ts = findCreationTime(story, 0);
+  if (ts) return new Date(ts * 1000).toISOString();
+
+  return null;
+}
+
+function findCreationTime(obj, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 8) return null;
+  if (typeof obj.creation_time === 'number' && obj.creation_time > 1000000000) return obj.creation_time;
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const r = findCreationTime(item, depth + 1);
+      if (r) return r;
+    }
+  } else {
+    for (const key of Object.keys(obj)) {
+      const r = findCreationTime(obj[key], depth + 1);
+      if (r) return r;
+    }
+  }
+  return null;
 }
 
 /**
@@ -254,39 +295,197 @@ function pickAuthor(story) {
 /** Extract comments from a story's feedback structure */
 function extractCommentsFromStory(story) {
   const comments = [];
-  const feedback = story?.feedback || story?.comet_sections?.feedback;
-  if (!feedback) return comments;
-  findCommentNodes(feedback, comments, new Set());
+  const seen = new Set();
+
+  // FB nests feedback in multiple places — collect all feedback objects
+  const feedbacks = [
+    story?.feedback,
+    story?.comet_sections?.feedback?.story?.feedback,
+    story?.comet_sections?.content?.story?.feedback,
+  ].filter(Boolean);
+
+  for (const fb of feedbacks) {
+    // Primary path: display_comments.edges[].node
+    const displayComments = fb?.display_comments?.edges
+      || fb?.comment_rendering_instance?.comments?.edges
+      || [];
+    for (const edge of displayComments) {
+      const node = edge?.node;
+      if (!node) continue;
+      addComment(node, comments, seen);
+    }
+
+    // Also search recursively for any Comment nodes we missed
+    findCommentNodes(fb, comments, seen, 0);
+  }
+
   return comments;
 }
 
-function findCommentNodes(obj, results, seenTexts, depth = 0) {
-  if (!obj || typeof obj !== 'object' || depth > 15) return;
+function addComment(node, results, seen) {
+  const text = node?.body?.text || node?.message?.text;
+  if (!text || text.length < 1) return;
+  const fp = text.slice(0, 60).toLowerCase();
+  if (seen.has(fp)) return;
+  seen.add(fp);
+  const author = node?.author?.name || node?.actors?.[0]?.name || 'Unknown';
+  const commentId = node?.id || node?.legacy_fbid || null;
+  results.push({ commentId, authorName: author, commentText: text });
+}
 
-  if ((obj.__typename === 'Comment' || obj.body?.text) && !obj.group_feed) {
-    const text = obj.body?.text || obj.message?.text;
-    if (text && text.length >= 1) {
-      const fp = text.slice(0, 60).toLowerCase();
-      if (!seenTexts.has(fp)) {
-        seenTexts.add(fp);
-        const author = obj.author?.name || obj.actors?.[0]?.name || 'Unknown';
-        const commentId = obj.id || null;
-        results.push({ commentId, authorName: author, commentText: text });
-      }
-    }
+function findCommentNodes(obj, results, seen, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 12) return;
+
+  if (obj.__typename === 'Comment' && !obj.group_feed) {
+    addComment(obj, results, seen);
   }
 
   if (Array.isArray(obj)) {
-    for (const item of obj) findCommentNodes(item, results, seenTexts, depth + 1);
+    for (const item of obj) findCommentNodes(item, results, seen, depth + 1);
   } else {
     for (const key of Object.keys(obj)) {
-      if (key === 'message' || key === 'body') continue;
-      findCommentNodes(obj[key], results, seenTexts, depth + 1);
+      // Skip keys that would lead us into post text or infinite loops
+      if (key === 'message' || key === 'body' || key === 'group_feed') continue;
+      findCommentNodes(obj[key], results, seen, depth + 1);
     }
   }
 }
 
 // ── Main scrape function ─────────────────────────────────────────────
+
+/**
+ * Click into each visible post to load its comments via GraphQL.
+ * For each post: click the comment count link → sort by Newest → wait → close modal.
+ */
+async function loadCommentsForPosts(page, graphqlResponses, maxPosts = 20) {
+  // Find all comment links in the feed articles
+  const commentLinks = await page.evaluate(() => {
+    const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+    const links = [];
+    for (const article of articles) {
+      // FB comment links typically contain the text "comment" or "Comment"
+      // They're usually an anchor or span inside the article's footer area
+      const allLinks = article.querySelectorAll('a[role="link"], span[role="button"]');
+      for (const link of allLinks) {
+        const text = (link.textContent || '').trim().toLowerCase();
+        // Match "X comments", "1 comment", "Comment", etc.
+        if (/^\d+\s+comments?$/.test(text) || text === 'comment' || text === 'comments') {
+          const rect = link.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            links.push({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text });
+            break; // one per article
+          }
+        }
+      }
+    }
+    return links;
+  });
+
+  log(`Found ${commentLinks.length} comment links to click`);
+  const limit = Math.min(commentLinks.length, maxPosts);
+
+  for (let i = 0; i < limit; i++) {
+    const link = commentLinks[i];
+    const beforeCount = graphqlResponses.length;
+
+    log(`  Opening comments ${i + 1}/${limit} ("${link.text}")...`);
+
+    // Scroll the link into view first, then re-get its position and click
+    await page.evaluate((y) => window.scrollTo(0, y - 300), link.y);
+    await randomDelay(300, 500);
+
+    // Re-find the link position after scroll
+    const freshPos = await page.evaluate((idx) => {
+      const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+      let count = 0;
+      for (const article of articles) {
+        const allLinks = article.querySelectorAll('a[role="link"], span[role="button"]');
+        for (const link of allLinks) {
+          const text = (link.textContent || '').trim().toLowerCase();
+          if (/^\d+\s+comments?$/.test(text) || text === 'comment' || text === 'comments') {
+            const rect = link.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              if (count === idx) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+              count++;
+              break;
+            }
+          }
+        }
+      }
+      return null;
+    }, i);
+
+    if (!freshPos) { log(`    Could not find comment link ${i}, skipping`); continue; }
+
+    await page.mouse.click(freshPos.x, freshPos.y);
+    await randomDelay(1500, 2500);
+
+    // Wait for comment GraphQL responses to arrive
+    await new Promise((resolve) => {
+      const check = () => {
+        if (graphqlResponses.length > beforeCount) return resolve();
+        setTimeout(check, 300);
+      };
+      setTimeout(check, 300);
+      setTimeout(resolve, 5000);
+    });
+
+    // Try to sort comments by "Newest" — look for the sort dropdown
+    try {
+      const sorted = await page.evaluate(() => {
+        // Look for "Most relevant" or sort button in the modal/expanded comments
+        const buttons = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'));
+        for (const btn of buttons) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          if (text.includes('most relevant') || text.includes('all comments')) {
+            btn.click();
+            return 'clicked-sort';
+          }
+        }
+        return 'no-sort-found';
+      });
+
+      if (sorted === 'clicked-sort') {
+        await randomDelay(500, 800);
+        // Now click "Newest" in the dropdown
+        await page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], span'));
+          for (const item of items) {
+            const text = (item.textContent || '').trim().toLowerCase();
+            if (text === 'newest' || text === 'new') {
+              item.click();
+              return;
+            }
+          }
+        });
+        await randomDelay(1000, 1500);
+
+        // Wait for sorted comments to load
+        const afterSort = graphqlResponses.length;
+        await new Promise((resolve) => {
+          const check = () => {
+            if (graphqlResponses.length > afterSort) return resolve();
+            setTimeout(check, 300);
+          };
+          setTimeout(check, 300);
+          setTimeout(resolve, 3000);
+        });
+      }
+    } catch (e) {
+      // Sort is best-effort
+    }
+
+    // Close the modal/expanded view — press Escape
+    await page.keyboard.press('Escape');
+    await randomDelay(500, 1000);
+
+    // If modal is still open (sometimes needs a second Escape)
+    await page.keyboard.press('Escape');
+    await randomDelay(300, 500);
+
+    log(`    +${graphqlResponses.length - beforeCount} GraphQL responses`);
+  }
+}
 
 async function scrape() {
   log('Starting Facebook group scrape');
@@ -314,39 +513,6 @@ async function scrape() {
 
     // ── Intercept GraphQL requests + responses ────────────────────
     const graphqlResponses = [];
-    const gqlHits = []; // post-like responses for debugging
-
-    // Log outgoing GraphQL requests (doc_id, friendly name, variables)
-    page.on('request', (req) => {
-      const url = req.url();
-      if (!url.includes('graphql')) return;
-      if (req.method() !== 'POST') return;
-      const body = req.postData() || '';
-      const docId = (body.match(/doc_id=(\d+)/) || [])[1];
-      let variables = null;
-      const m = body.match(/variables=([^&]+)/);
-      if (m) {
-        try { variables = JSON.parse(decodeURIComponent(m[1])); } catch {}
-      }
-      const friendly = (body.match(/fb_api_req_friendly_name=([^&]+)/) || [])[1];
-      const varsStr = variables ? JSON.stringify(variables) : '';
-      const seemsGroup = varsStr.includes('325119181430845') || varsStr.includes('"group"');
-      if (docId || friendly) {
-        log(`[GQL REQ] docId=${docId} friendly=${friendly ? decodeURIComponent(friendly) : '-'} group=${seemsGroup}`);
-        if (variables) log(`  vars: ${JSON.stringify(Object.keys(variables).slice(0, 15))}`);
-        if (seemsGroup) log(`  FULL VARS: ${varsStr.slice(0, 500)}`);
-      }
-    });
-
-    function looksLikePostsPayload(text) {
-      return (
-        text.includes('"story"') ||
-        text.includes('"stories"') ||
-        text.includes('"feed"') ||
-        text.includes('"edges"') ||
-        (text.includes('"group"') && text.includes('"node"'))
-      );
-    }
 
     page.on('response', async (response) => {
       const url = response.url();
@@ -356,14 +522,6 @@ async function scrape() {
 
       let text;
       try { text = await response.text(); } catch { return; }
-
-      // Track post-like payloads for debugging
-      if (looksLikePostsPayload(text)) {
-        gqlHits.push({ url, status, len: text.length, sample: text.slice(0, 300) });
-        if (gqlHits.length <= 5) {
-          log(`POST-LIKE GraphQL #${gqlHits.length - 1} len=${text.length}`);
-        }
-      }
 
       // Parse all GraphQL responses (FB sometimes returns multiple JSON per line)
       for (const line of text.split('\n')) {
@@ -398,6 +556,7 @@ async function scrape() {
     if (process.env.DEBUG_FIRST === 'true') {
       log(`DEBUG_FIRST — ${graphqlResponses.length} GraphQL responses`);
 
+      // First pass: extract posts from feed data
       let allPosts = [];
       const seenDebug = new Set();
       for (const resp of graphqlResponses) {
@@ -409,8 +568,26 @@ async function scrape() {
           allPosts.push(p);
         }
       }
+      log(`Feed extraction: ${allPosts.length} unique posts`);
 
-      log(`Extracted ${allPosts.length} unique posts`);
+      // Load comments for each post
+      await loadCommentsForPosts(page, graphqlResponses);
+
+      // Second pass: re-extract with comment data now available
+      allPosts = [];
+      seenDebug.clear();
+      for (const resp of graphqlResponses) {
+        const posts = extractPostsFromGraphQL(resp);
+        for (const p of posts) {
+          const key = p.postText.slice(0, 120).toLowerCase();
+          if (seenDebug.has(key)) continue;
+          seenDebug.add(key);
+          allPosts.push(p);
+        }
+      }
+
+      const totalComments = allPosts.reduce((sum, p) => sum + p.comments.length, 0);
+      log(`Extracted ${allPosts.length} unique posts with ${totalComments} total comments`);
       console.log(JSON.stringify(allPosts, null, 2));
 
       await browser.close();
@@ -467,7 +644,7 @@ async function scrape() {
             postId,
             authorName: post.authorName || 'Unknown',
             postText: post.postText.slice(0, 2000),
-            timestamp: new Date().toISOString(),
+            timestamp: post.timestamp || new Date().toISOString(),
           });
           for (let i = 0; i < (post.comments || []).length; i++) {
             const c = post.comments[i];
@@ -476,7 +653,7 @@ async function scrape() {
               postId: c.commentId || `${postId}-c${i}`,
               authorName: c.authorName || 'Unknown',
               postText: c.commentText.slice(0, 2000),
-              timestamp: new Date().toISOString(),
+              timestamp: post.timestamp || new Date().toISOString(),
             });
           }
 
@@ -523,6 +700,12 @@ async function scrape() {
     if (!foundKnown && hasPriorData) {
       log(`Hit max scrolls (${MAX_SCROLLS}) without finding enough known posts.`);
     }
+
+    // ── Load comments for visible posts ────────────────────────────
+    log('Loading comments for posts...');
+    await loadCommentsForPosts(page, graphqlResponses);
+    // Re-process to pick up newly loaded comments
+    processGraphQLData();
 
     saveSeenPosts(seenData);
     log(`Saved ${seenData.ids.size} seen IDs + ${seenData.fingerprints.size} fingerprints.`);

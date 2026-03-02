@@ -210,13 +210,13 @@ export async function classify(
 
   try {
     const response = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.2',
       messages: [
         { role: 'system', content: buildSystemPrompt(knownTrails, aliasMap) },
         { role: 'user', content: report.postText },
       ],
       temperature: 0.1,
-      max_tokens: 100,
+      max_completion_tokens: 100,
     });
 
     const content = response.choices[0]?.message?.content ?? '';
