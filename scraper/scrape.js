@@ -351,6 +351,77 @@ function findCommentNodes(obj, results, seen, depth) {
   }
 }
 
+/**
+ * Scan all GraphQL responses for Comment nodes and return them grouped by parent post ID.
+ * Comment responses from clicking "X comments" have different structures than feed responses.
+ * We recursively search for Comment nodes and try to find the associated post_id.
+ */
+function extractCommentsFromAllResponses(responses) {
+  const commentsByPost = new Map(); // postId -> [{commentId, authorName, commentText}]
+  const seenCommentTexts = new Set();
+
+  for (const resp of responses) {
+    // Try to find the parent post_id for this response
+    const postId = findPostIdInResponse(resp);
+
+    // Recursively find all Comment nodes
+    const comments = [];
+    findAllComments(resp, comments, seenCommentTexts, 0);
+
+    if (comments.length > 0 && postId) {
+      if (!commentsByPost.has(postId)) commentsByPost.set(postId, []);
+      commentsByPost.get(postId).push(...comments);
+    } else if (comments.length > 0) {
+      // No post ID found — store under 'unknown'
+      if (!commentsByPost.has('unknown')) commentsByPost.set('unknown', []);
+      commentsByPost.get('unknown').push(...comments);
+    }
+  }
+
+  return commentsByPost;
+}
+
+function findPostIdInResponse(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 10) return null;
+  // Look for post_id or feedback_id that looks like a post
+  if (obj.post_id && /^\d+$/.test(String(obj.post_id))) return String(obj.post_id);
+  // Story node with post_id
+  if (obj.__typename === 'Story' && obj.post_id) return String(obj.post_id);
+  // Check data.node path
+  if (obj.data?.node?.post_id) return String(obj.data.node.post_id);
+  // Check feedback target post
+  if (obj.data?.node?.__typename === 'Story') return findPostIdInResponse(obj.data.node, depth + 1);
+  // Recurse into data
+  if (obj.data && depth < 3) return findPostIdInResponse(obj.data, depth + 1);
+  return null;
+}
+
+function findAllComments(obj, results, seen, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 15) return;
+
+  if (obj.__typename === 'Comment') {
+    const text = obj?.body?.text || obj?.message?.text;
+    if (text && text.length >= 1) {
+      const fp = text.slice(0, 60).toLowerCase();
+      if (!seen.has(fp)) {
+        seen.add(fp);
+        const author = obj?.author?.name || obj?.actors?.[0]?.name || 'Unknown';
+        const commentId = obj?.id || obj?.legacy_fbid || null;
+        results.push({ commentId, authorName: author, commentText: text });
+      }
+    }
+  }
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) findAllComments(item, results, seen, depth + 1);
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (key === 'message' || key === 'body') continue;
+      findAllComments(obj[key], results, seen, depth + 1);
+    }
+  }
+}
+
 // ── Main scrape function ─────────────────────────────────────────────
 
 /**
@@ -577,6 +648,26 @@ async function scrape() {
           seenDebug.add(key);
           allPosts.push(p);
         }
+      }
+
+      // Merge comments from all GraphQL responses (including comment-specific queries)
+      const commentsByPost = extractCommentsFromAllResponses(graphqlResponses);
+      for (const post of allPosts) {
+        const extra = commentsByPost.get(post.postId) || [];
+        // Dedup against existing comments
+        const existingTexts = new Set(post.comments.map(c => c.commentText.slice(0, 60).toLowerCase()));
+        for (const c of extra) {
+          const fp = c.commentText.slice(0, 60).toLowerCase();
+          if (!existingTexts.has(fp)) {
+            post.comments.push(c);
+            existingTexts.add(fp);
+          }
+        }
+      }
+      // Log unmatched comments
+      const unknownComments = commentsByPost.get('unknown') || [];
+      if (unknownComments.length > 0) {
+        log(`  ${unknownComments.length} comments couldn't be matched to a post`);
       }
 
       const totalComments = allPosts.reduce((sum, p) => sum + p.comments.length, 0);
