@@ -425,8 +425,8 @@ function findAllComments(obj, results, seen, depth) {
 // ── Main scrape function ─────────────────────────────────────────────
 
 /**
- * Visit each post's permalink to load comments via GraphQL interception.
- * Two-phase approach: we already have post IDs from the feed — now visit each one.
+ * Visit each post's permalink and extract comments from the DOM.
+ * FB renders comments server-side — GraphQL interception doesn't capture them.
  * Returns a Map of postId -> [{commentId, authorName, commentText}]
  */
 async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845') {
@@ -439,72 +439,72 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
     const post = postsWithComments[i];
     const url = `https://www.facebook.com/groups/${groupId}/permalink/${post.postId}/`;
 
-    // Fresh response collector for this post
-    const postResponses = [];
-    const responseHandler = async (response) => {
-      const rUrl = response.url();
-      if (!rUrl.includes('graphql')) return;
-      if (response.status() < 200 || response.status() >= 300) return;
-      let text;
-      try { text = await response.text(); } catch { return; }
-      for (const line of text.split('\n')) {
-        if (!line.trim()) continue;
-        try { postResponses.push(JSON.parse(line)); } catch {}
-      }
-    };
-
-    page.on('response', responseHandler);
-
     try {
       log(`  [${i + 1}/${postsWithComments.length}] Visiting post ${post.postId}...`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await randomDelay(2000, 3000);
 
-      // Scroll down a bit to trigger any lazy-loaded comment GraphQL
+      // Scroll down to ensure comments are rendered
       for (let s = 0; s < 3; s++) {
         await page.evaluate(() => window.scrollBy(0, window.innerHeight));
         await randomDelay(800, 1200);
       }
-      // Wait for network to settle
-      await page.waitForNetworkIdle({ idleTime: 1500, timeout: 8000 }).catch(() => {});
 
-      log(`    ${postResponses.length} GraphQL responses captured`);
+      // Extract comments from the DOM
+      const comments = await page.evaluate(() => {
+        const results = [];
+        // Comments are div[role="article"] — first one is the post, rest are comments
+        const articles = Array.from(document.querySelectorAll('div[role="article"]'));
 
-      // Extract comments from all responses for this post
-      const comments = [];
-      const seenTexts = new Set();
+        for (let idx = 1; idx < articles.length; idx++) {
+          const article = articles[idx];
 
-      for (const resp of postResponses) {
-        findAllComments(resp, comments, seenTexts, 0);
-      }
+          // Author: first link with a name
+          let author = 'Unknown';
+          const authorLink = article.querySelector('a[role="link"] span');
+          if (authorLink) {
+            const name = (authorLink.textContent || '').trim();
+            if (name && name.length > 1 && name.length < 80) author = name;
+          }
+
+          // Comment text: div[dir="auto"] inside the article
+          let text = '';
+          const textDivs = article.querySelectorAll('div[dir="auto"]');
+          for (const div of textDivs) {
+            const t = (div.textContent || '').trim();
+            if (t.length >= 2 && t !== author && !t.match(/^\d+[hmdwy]$/)) {
+              text = t;
+              break;
+            }
+          }
+
+          if (text) {
+            results.push({ authorName: author, commentText: text });
+          }
+        }
+        return results;
+      });
 
       if (comments.length > 0) {
-        commentsByPost.set(post.postId, comments);
-        log(`    Found ${comments.length} comment(s)`);
+        const seen = new Set();
+        const deduped = [];
         for (const c of comments) {
+          const fp = c.commentText.slice(0, 60).toLowerCase();
+          if (!seen.has(fp)) {
+            seen.add(fp);
+            deduped.push({ commentId: null, authorName: c.authorName, commentText: c.commentText });
+          }
+        }
+        commentsByPost.set(post.postId, deduped);
+        log(`    Found ${deduped.length} comment(s)`);
+        for (const c of deduped) {
           log(`      💬 ${c.authorName}: ${c.commentText.slice(0, 100)}`);
         }
       } else {
-        // DEBUG: dump typenames from responses to help diagnose
-        for (let ri = 0; ri < Math.min(postResponses.length, 3); ri++) {
-          const resp = postResponses[ri];
-          const str = JSON.stringify(resp);
-          const typenames = new Set();
-          const findTN = (obj, d = 0) => {
-            if (!obj || typeof obj !== 'object' || d > 10) return;
-            if (obj.__typename) typenames.add(obj.__typename);
-            if (Array.isArray(obj)) { for (const item of obj) findTN(item, d + 1); }
-            else { for (const k of Object.keys(obj)) findTN(obj[k], d + 1); }
-          };
-          findTN(resp);
-          log(`    [debug resp ${ri}] ${str.length} chars, typenames: [${[...typenames].join(', ')}]`);
-          log(`    [debug resp ${ri}] DUMP: ${str.slice(0, 3000)}`);
-        }
+        log(`    No comments found`);
       }
     } catch (e) {
       log(`    Error loading post ${post.postId}: ${e.message}`);
-    } finally {
-      page.off('response', responseHandler);
     }
 
     await randomDelay(1000, 2000);
