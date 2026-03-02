@@ -225,11 +225,15 @@ function extractPostsFromPage() {
     const textEls = article.querySelectorAll('div[dir="auto"]');
     for (const el of textEls) {
       const text = (el.textContent || '').trim();
-      if (text.length > 20 && text.length > postText.length) {
-        postText = text;
+      if (parentPostId) {
+        // For comments, take any text at all
+        if (text.length > 0 && text.length > postText.length) postText = text;
+      } else {
+        // For top-level posts, require 20+ chars to skip UI noise
+        if (text.length > 20 && text.length > postText.length) postText = text;
       }
     }
-    if (!postText || postText.length < 10) return null;
+    if (!postText) return null;
 
     let authorName = 'Unknown';
     const authorEl = article.querySelector('h3 a strong, h4 a strong, a[role="link"] strong, span.x3nfvp2 a strong');
@@ -292,6 +296,7 @@ function extractPostsFromPage() {
       results.push(post);
 
       // Now get comments inside this post
+      // Facebook renders comments in various ways — try multiple selectors
       const commentArticles = article.querySelectorAll('div[role="article"]');
       for (const commentEl of commentArticles) {
         try {
@@ -299,6 +304,24 @@ function extractPostsFromPage() {
           if (comment) results.push(comment);
         } catch (e) {
           // skip bad comment
+        }
+      }
+
+      // Also look for comment-like elements that aren't role="article"
+      // Facebook often uses list items or divs inside a comments section
+      const commentContainers = article.querySelectorAll('ul[role="list"] > li, div[aria-label*="comment" i], div[data-testid*="comment"]');
+      for (const commentEl of commentContainers) {
+        try {
+          // Skip if we already got this as a nested article
+          if (commentEl.querySelector('div[role="article"]')) continue;
+          const comment = parseArticle(commentEl, post.postId);
+          if (comment) {
+            // Avoid duplicates by checking text
+            const isDupe = results.some(r => r.postText === comment.postText && r.isComment);
+            if (!isDupe) results.push(comment);
+          }
+        } catch (e) {
+          // skip
         }
       }
     } catch (e) {
@@ -482,23 +505,32 @@ async function scrape() {
     log('Expanding comments...');
     const expandedCount = await page.evaluate(async () => {
       let clicked = 0;
-      // Click "View more comments", "View all X comments", etc.
-      for (let round = 0; round < 3; round++) {
-        const expanders = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'));
-        for (const btn of expanders) {
+      // Click "View more comments", "View all X comments", "X replies", etc.
+      // Run multiple rounds since expanding one section may reveal more
+      for (let round = 0; round < 5; round++) {
+        let roundClicks = 0;
+        const clickables = Array.from(document.querySelectorAll(
+          'div[role="button"], span[role="button"], span[tabindex="0"], div[tabindex="0"]'
+        ));
+        for (const btn of clickables) {
           const text = (btn.textContent || '').trim().toLowerCase();
           if (
             text.includes('view more comment') ||
             text.includes('view all') ||
+            text.includes('most relevant') ||
+            text.includes('all comments') ||
             text.match(/view \d+ more comment/) ||
-            text.match(/\d+ repl/)
+            text.match(/view \d+ previous/) ||
+            text.match(/\d+ repl/) ||
+            text.match(/see more/)
           ) {
-            btn.click();
+            try { btn.click(); } catch(e) {}
+            roundClicks++;
             clicked++;
             await new Promise(r => setTimeout(r, 800 + Math.random() * 600));
           }
         }
-        if (clicked === 0) break;
+        if (roundClicks === 0) break;
         await new Promise(r => setTimeout(r, 1500));
       }
       return clicked;
