@@ -139,23 +139,9 @@ export async function getActiveStationIds(): Promise<string[]> {
 /**
  * Determine if the system should poll frequently (hourly) or infrequently (daily).
  *
- * Returns true when any rain event is active OR any trail is in a drying state
- * ("Probably Not Rideable" or "Probably Rideable" that isn't "Verified Rideable").
- *
- * Adaptive polling per Requirement 1.4:
- * - Daily when no active rain events and all trails are stable
- * - Hourly when rain events are active or trails are drying
- */
-export /**
- * Determine if the system should poll frequently (hourly) or infrequently (daily).
- *
- * Returns true only when rain is actively falling OR trails are still
- * "Probably Not Rideable" (actually drying). "Probably Rideable" trails
- * are nearly dry and don't need frequent weather updates.
- *
- * Adaptive polling per Requirement 1.4:
- * - Daily around midday when no active rain and no actively drying trails
- * - Hourly when rain is active or trails are in "Probably Not Rideable"
+ * Returns true when rain is active OR any trail is still wet/drying.
+ * - No active rain + all trails dry → false (forecast-only mode)
+ * - Active rain or trails in "Probably Not Rideable" / "Verified Not Rideable" → true
  */
 export async function shouldPollFrequently(): Promise<boolean> {
   // Check for active rain events
