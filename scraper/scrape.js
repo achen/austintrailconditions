@@ -263,21 +263,43 @@ async function scrape() {
 
     // ── Intercept GraphQL responses ────────────────────────────────
     const graphqlResponses = [];
+    const gqlHits = []; // post-like responses for debugging
+
+    function looksLikePostsPayload(text) {
+      return (
+        text.includes('"story"') ||
+        text.includes('"stories"') ||
+        text.includes('"feed"') ||
+        text.includes('"edges"') ||
+        (text.includes('"group"') && text.includes('"node"'))
+      );
+    }
 
     page.on('response', async (response) => {
       const url = response.url();
       if (!url.includes('graphql')) return;
-      try {
-        const text = await response.text();
-        // Facebook sometimes returns multiple JSON objects separated by newlines
-        for (const line of text.split('\n')) {
-          if (!line.trim()) continue;
-          try {
-            const json = JSON.parse(line);
-            graphqlResponses.push(json);
-          } catch {}
+      const status = response.status();
+      if (status < 200 || status >= 300) return;
+
+      let text;
+      try { text = await response.text(); } catch { return; }
+
+      // Track post-like payloads for debugging
+      if (looksLikePostsPayload(text)) {
+        gqlHits.push({ url, status, len: text.length, sample: text.slice(0, 300) });
+        if (gqlHits.length <= 5) {
+          log(`POST-LIKE GraphQL #${gqlHits.length - 1} len=${text.length}`);
         }
-      } catch {}
+      }
+
+      // Parse all GraphQL responses (FB sometimes returns multiple JSON per line)
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const json = JSON.parse(line);
+          graphqlResponses.push(json);
+        } catch {}
+      }
     });
 
     log('Navigating to group...');
@@ -291,40 +313,37 @@ async function scrape() {
       process.exit(2);
     }
 
-    // ── DEBUG_FIRST: dump raw GraphQL data and exit ────────────────
+    // ── DEBUG_FIRST: dump GraphQL data to console and exit ────────
     if (process.env.DEBUG_FIRST === 'true') {
-      log(`DEBUG_FIRST — captured ${graphqlResponses.length} GraphQL responses`);
+      log(`DEBUG_FIRST — ${graphqlResponses.length} GraphQL responses, ${gqlHits.length} post-like`);
 
-      // Try to extract posts from all captured responses
+      // Print post-like payload samples
+      for (let i = 0; i < gqlHits.length; i++) {
+        const h = gqlHits[i];
+        log(`\n=== POST-LIKE #${i} (${h.len} chars) ===`);
+        console.log(h.sample);
+      }
+
+      // Try to extract posts
       let allPosts = [];
-      for (let i = 0; i < graphqlResponses.length; i++) {
-        const posts = extractPostsFromGraphQL(graphqlResponses[i]);
-        if (posts.length > 0) {
-          log(`  Response #${i}: found ${posts.length} post(s)`);
-          allPosts.push(...posts);
-        }
+      for (const resp of graphqlResponses) {
+        allPosts.push(...extractPostsFromGraphQL(resp));
       }
 
-      log(`\nExtracted ${allPosts.length} total posts from GraphQL:`);
-      for (const p of allPosts) {
-        log(`  📝 [${p.postId}] ${p.authorName}: ${(p.postText || '').slice(0, 150)}`);
-        for (const c of p.comments) {
-          log(`     💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
+      if (allPosts.length > 0) {
+        log(`\nExtracted ${allPosts.length} posts:`);
+        for (const p of allPosts) {
+          log(`  📝 [${p.postId}] ${p.authorName}: ${(p.postText || '').slice(0, 150)}`);
+          for (const c of p.comments) {
+            log(`     💬 ${c.authorName}: ${(c.commentText || '').slice(0, 100)}`);
+          }
         }
-      }
-
-      // Also dump the first response that has any "message" or "text" fields for inspection
-      if (allPosts.length === 0) {
-        log('\nNo posts found. Dumping first 3 GraphQL response summaries...');
-        for (let i = 0; i < Math.min(3, graphqlResponses.length); i++) {
-          const json = JSON.stringify(graphqlResponses[i]).slice(0, 2000);
-          log(`  Response #${i} (${JSON.stringify(graphqlResponses[i]).length} chars): ${json}`);
-        }
-        // Also dump full first response to file for inspection
-        if (graphqlResponses.length > 0) {
-          const dumpFile = path.join(__dirname, 'graphql-debug.json');
-          fs.writeFileSync(dumpFile, JSON.stringify(graphqlResponses, null, 2));
-          log(`Full GraphQL data dumped to ${dumpFile}`);
+      } else {
+        log('\nNo posts extracted. Dumping all GraphQL responses...');
+        for (let i = 0; i < graphqlResponses.length; i++) {
+          const str = JSON.stringify(graphqlResponses[i]);
+          log(`\n--- Response #${i} (${str.length} chars) ---`);
+          console.log(str.slice(0, 3000));
         }
       }
 
