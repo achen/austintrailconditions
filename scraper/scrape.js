@@ -450,19 +450,58 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
         await randomDelay(800, 1200);
       }
 
+      // Sort comments by Newest
+      try {
+        const clickedSort = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'));
+          for (const btn of buttons) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text.includes('most relevant') || text.includes('all comments') || text.includes('newest')) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (clickedSort) {
+          await randomDelay(500, 800);
+          // Click "Newest" in the dropdown menu
+          await page.evaluate(() => {
+            const items = Array.from(document.querySelectorAll('div[role="menuitem"], div[role="option"], span'));
+            for (const item of items) {
+              const text = (item.textContent || '').trim().toLowerCase();
+              if (text === 'newest' || text === 'new') {
+                item.click();
+                return;
+              }
+            }
+          });
+          await randomDelay(1500, 2000);
+        }
+      } catch (e) { /* sort is best-effort */ }
+
       // Extract comments from the DOM
       const comments = await page.evaluate(() => {
         const results = [];
-        // The main post is the first div[role="article"].
-        // Its comments are nested div[role="article"] elements INSIDE it.
-        const mainArticle = document.querySelector('div[role="article"]');
-        if (!mainArticle) return results;
+        // All comment-like elements on the page
+        const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+        if (articles.length <= 1) return results;
 
-        // Find comment articles nested within the main post article
-        const commentArticles = mainArticle.querySelectorAll('div[role="article"]');
+        // The first article is the main post — grab its text to filter out unrelated articles
+        const mainText = (articles[0].querySelector('div[dir="auto"]')?.textContent || '').slice(0, 60).toLowerCase();
 
-        for (const article of commentArticles) {
-          // Author: first link with a name
+        // Comments are articles after the first one that are INSIDE the same scrollable container
+        // Get the parent of the first article to scope our search
+        const mainParent = articles[0].parentElement;
+
+        for (let idx = 1; idx < articles.length; idx++) {
+          const article = articles[idx];
+
+          // Only include articles that share the same parent container as the main post
+          // This filters out sidebar/recommended post articles
+          if (mainParent && !mainParent.contains(article)) continue;
+
+          // Author
           let author = 'Unknown';
           const authorLink = article.querySelector('a[role="link"] span');
           if (authorLink) {
@@ -470,7 +509,7 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
             if (name && name.length > 1 && name.length < 80) author = name;
           }
 
-          // Comment text: div[dir="auto"] inside the article
+          // Comment text
           let text = '';
           const textDivs = article.querySelectorAll('div[dir="auto"]');
           for (const div of textDivs) {
@@ -481,37 +520,30 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
             }
           }
 
-          // Timestamp: look for links with aria-label containing a date, or relative time text
+          // Timestamp from comment permalink aria-label or relative time
           let timestamp = null;
-          // FB puts timestamps in <a> tags with aria-label like "1 day ago" or an absolute date
           const timeLinks = article.querySelectorAll('a[role="link"]');
           for (const link of timeLinks) {
             const aria = (link.getAttribute('aria-label') || '').trim();
             const href = link.getAttribute('href') || '';
-            // Comment permalink links contain the comment ID and have time-like aria labels
             if (href.includes('comment_id=') || href.includes('reply_comment_id=')) {
               if (aria) timestamp = aria;
               break;
             }
           }
-          // Fallback: look for relative time spans like "1d", "2h", "3w"
           if (!timestamp) {
             const spans = article.querySelectorAll('span');
             for (const span of spans) {
               const t = (span.textContent || '').trim();
-              if (/^\d+[hmdwy]$/.test(t)) {
-                timestamp = t;
-                break;
-              }
+              if (/^\d+[hmdwy]$/.test(t)) { timestamp = t; break; }
             }
           }
 
-          // Comment ID: extract from permalink href if available
+          // Comment ID from permalink
           let commentId = null;
           const permalinks = article.querySelectorAll('a[href*="comment_id="]');
           if (permalinks.length > 0) {
-            const href = permalinks[0].getAttribute('href') || '';
-            const match = href.match(/comment_id=(\d+)/);
+            const match = (permalinks[0].getAttribute('href') || '').match(/comment_id=(\d+)/);
             if (match) commentId = match[1];
           }
 
