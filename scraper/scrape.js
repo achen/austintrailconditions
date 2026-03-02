@@ -264,9 +264,22 @@ async function scrape() {
 
     // Debug mode: dump first article HTML and exit (before sort)
     if (process.env.DEBUG_FIRST === 'true') {
-      log('DEBUG_FIRST mode — waiting for feed...');
-      try { await page.waitForSelector('div[role="feed"]', { timeout: 15000 }); } catch {}
+      log('DEBUG_FIRST mode — scrolling to trigger post load...');
+      // Scroll down to trigger lazy loading
+      await page.evaluate(() => window.scrollBy(0, 800));
       await randomDelay(3000, 5000);
+      // Scroll again
+      await page.evaluate(() => window.scrollBy(0, 800));
+      await randomDelay(3000, 5000);
+
+      // Wait for a real article (one with div[dir="auto"])
+      await page.waitForFunction(() => {
+        for (const article of document.querySelectorAll('div[role="article"]')) {
+          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+          if (article.querySelector('div[dir="auto"]')) return true;
+        }
+        return false;
+      }, { timeout: 15000 }).catch(() => log('Still no real articles after waiting.'));
 
       // Dump all article info
       const debugInfo = await page.evaluate(() => {
@@ -283,10 +296,15 @@ async function scrape() {
         return info;
       });
       log(`Found ${debugInfo.length} total article elements:`);
-      debugInfo.forEach((a, i) => log(`  #${i}: nested=${a.isNested} hasDirAuto=${a.hasDirAuto} hasLoading=${a.hasLoading} text=${a.textLen}chars html=${a.htmlLen}chars`));
+      debugInfo.forEach((a, i) => log(`  #${i}: nested=${a.isNested} dirAuto=${a.hasDirAuto} loading=${a.hasLoading} text=${a.textLen} html=${a.htmlLen}`));
 
-      // Print first non-nested article HTML regardless of content
+      // Print first real article HTML
       const firstHtml = await page.evaluate(() => {
+        for (const article of document.querySelectorAll('div[role="article"]')) {
+          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+          if (article.querySelector('div[dir="auto"]')) return article.outerHTML;
+        }
+        // Fallback: first non-nested article regardless
         for (const article of document.querySelectorAll('div[role="article"]')) {
           if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
           return article.outerHTML;
@@ -294,9 +312,7 @@ async function scrape() {
         return null;
       });
       if (firstHtml) {
-        console.log('\n--- FIRST ARTICLE HTML ---');
         console.log(firstHtml);
-        console.log('--- END ---');
       } else {
         log('No top-level articles found!');
       }
