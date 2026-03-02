@@ -294,6 +294,25 @@ async function scrape() {
     catch { try { await page.waitForSelector('div[role="article"]', { timeout: 10000 }); } catch {} }
     await randomDelay(2000, 3000);
 
+    // Debug mode: dump first article HTML and exit
+    if (process.env.DEBUG_FIRST === 'true') {
+      log('DEBUG_FIRST mode — dumping first article HTML...');
+      const firstHtml = await page.evaluate(() => {
+        for (const article of document.querySelectorAll('div[role="article"]')) {
+          if (article.parentElement && article.parentElement.closest('div[role="article"]')) continue;
+          return article.outerHTML;
+        }
+        return null;
+      });
+      if (firstHtml) {
+        console.log(firstHtml);
+      } else {
+        log('No articles found on page!');
+      }
+      await browser.close();
+      process.exit(0);
+    }
+
     // Switch comment sort to "Newest"
     async function sortCommentsNewest() {
       const switched = await page.evaluate(async () => {
