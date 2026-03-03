@@ -33,6 +33,7 @@ if (fs.existsSync(envPath)) {
 const API_URL = (process.env.API_URL || 'https://austintrailconditions.com').replace(/\/$/, '');
 const API_SECRET = process.env.API_SECRET || '';
 const FB_GROUP = 'https://www.facebook.com/groups/325119181430845';
+const FB_GROUP_ID = '325119181430845';
 const MAX_SCROLLS = parseInt(process.env.MAX_SCROLLS || '5', 10);
 const HEADLESS = process.env.HEADLESS !== 'false';
 
@@ -203,15 +204,23 @@ function extractText(story) {
  * Handles two formats:
  *   1) data.node.group_feed.edges[].node (batch)
  *   2) data.node (streamed individual story, with label containing "group_feed")
+ * 
+ * Only returns posts that belong to the target group (FB_GROUP_ID).
  */
 function extractPostsFromGraphQL(responseObj) {
   const stories = [];
 
-  // Format 1: batch edges
-  const edges = responseObj?.data?.node?.group_feed?.edges;
+  // Format 1: batch edges - also capture the parent group ID
+  const groupNode = responseObj?.data?.node;
+  const parentGroupId = groupNode?.id ? extractGroupIdFromNode(groupNode) : null;
+  
+  const edges = groupNode?.group_feed?.edges;
   if (Array.isArray(edges)) {
     for (const edge of edges) {
-      if (edge?.node?.__typename === 'Story') stories.push(edge.node);
+      if (edge?.node?.__typename === 'Story') {
+        edge.node._parentGroupId = parentGroupId;
+        stories.push(edge.node);
+      }
     }
   }
 
@@ -226,6 +235,14 @@ function extractPostsFromGraphQL(responseObj) {
     const postText = extractText(story);
     if (!postText || postText.length < 3) continue;
 
+    // Validate this post belongs to our target group
+    const storyGroupId = extractGroupIdFromStory(story);
+    if (storyGroupId && storyGroupId !== FB_GROUP_ID) {
+      // Post is from a different group - skip it
+      log(`  Skipping post from different group (${storyGroupId}): ${postText.slice(0, 50)}...`);
+      continue;
+    }
+
     const postId = story.post_id || pickBestId(story);
     const authorName = story.feedback?.owning_profile?.name || pickAuthor(story) || 'Unknown';
     const comments = extractCommentsFromStory(story);
@@ -235,6 +252,87 @@ function extractPostsFromGraphQL(responseObj) {
   }
 
   return posts;
+}
+
+/**
+ * Extract group ID from a group node (the parent of group_feed).
+ */
+function extractGroupIdFromNode(node) {
+  if (!node?.id) return null;
+  try {
+    // FB encodes IDs as base64, e.g., "Group:325119181430845"
+    const decoded = Buffer.from(node.id, 'base64').toString('utf-8');
+    const match = decoded.match(/Group:(\d+)/);
+    if (match) return match[1];
+    // Fallback: raw numeric ID
+    if (/^\d+$/.test(node.id)) return node.id;
+  } catch {}
+  return null;
+}
+
+/**
+ * Extract the group ID from a story node.
+ * FB stores group info in various locations within the story structure.
+ */
+function extractGroupIdFromStory(story) {
+  // Check _parentGroupId set during extraction
+  if (story._parentGroupId) return story._parentGroupId;
+  
+  // Check feedback.owning_profile for group info
+  const owningProfile = story?.feedback?.owning_profile;
+  if (owningProfile?.id) {
+    try {
+      const decoded = Buffer.from(owningProfile.id, 'base64').toString('utf-8');
+      const match = decoded.match(/Group:(\d+)/);
+      if (match) return match[1];
+    } catch {}
+  }
+  
+  // Check comet_sections for group context
+  const contextStory = story?.comet_sections?.context_layout?.story;
+  const groupLink = contextStory?.comet_sections?.title?.story?.attached_story?.target;
+  if (groupLink?.id) {
+    try {
+      const decoded = Buffer.from(groupLink.id, 'base64').toString('utf-8');
+      const match = decoded.match(/Group:(\d+)/);
+      if (match) return match[1];
+    } catch {}
+    if (/^\d+$/.test(groupLink.id)) return groupLink.id;
+  }
+  
+  // Search recursively for group ID in the story
+  return findGroupId(story, 0);
+}
+
+/**
+ * Recursively search for a group ID in an object.
+ */
+function findGroupId(obj, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 6) return null;
+  
+  // Look for __typename === 'Group' with an id
+  if (obj.__typename === 'Group' && obj.id) {
+    try {
+      const decoded = Buffer.from(obj.id, 'base64').toString('utf-8');
+      const match = decoded.match(/Group:(\d+)/);
+      if (match) return match[1];
+    } catch {}
+    if (/^\d+$/.test(obj.id)) return obj.id;
+  }
+  
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const r = findGroupId(item, depth + 1);
+      if (r) return r;
+    }
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (key === 'message' || key === 'body' || key === 'comments') continue;
+      const r = findGroupId(obj[key], depth + 1);
+      if (r) return r;
+    }
+  }
+  return null;
 }
 
 /**
