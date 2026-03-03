@@ -651,6 +651,25 @@ async function loadCommentsViaPermalinks(page, posts, groupId = '325119181430845
 async function scrape() {
   log('Starting Facebook group scrape');
 
+  // Check if we should actually scrape Facebook
+  try {
+    const shouldRunRes = await fetch(`${API_URL}/api/scrape/should-run`, {
+      headers: { 'Authorization': `Bearer ${API_SECRET}` },
+    });
+    if (shouldRunRes.ok) {
+      const { shouldScrape, reason } = await shouldRunRes.json();
+      log(`Should scrape check: ${reason}`);
+      if (!shouldScrape) {
+        log('Skipping Facebook scrape — not needed right now');
+        process.exit(0);
+      }
+    } else {
+      log(`Should-run check failed (${shouldRunRes.status}), proceeding anyway`);
+    }
+  } catch (e) {
+    log(`Should-run check error: ${e.message}, proceeding anyway`);
+  }
+
   const chromePath = findChrome();
   if (!chromePath) { log('ERROR: Chrome not found.'); process.exit(1); }
   log(`Using Chrome: ${chromePath}`);
