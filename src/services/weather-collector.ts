@@ -1,5 +1,15 @@
 import { WeatherObservation } from '@/types';
 import { sql } from '@/lib/db';
+import { notifyWeatherApiAccessDenied } from '@/services/notification-service';
+
+/**
+ * If the WU API returns 401/403, send an alert and throw to halt all further calls.
+ */
+async function handleWeatherApiAccessDenied(statusCode: number, endpoint: string): Promise<never> {
+  console.error(`Weather API access denied (HTTP ${statusCode}) at ${endpoint}. Halting all weather API calls.`);
+  await notifyWeatherApiAccessDenied(statusCode, endpoint);
+  throw new Error(`Weather API access denied (HTTP ${statusCode}). API key may be locked. Alert email sent.`);
+}
 
 const AUSTIN_LATITUDE = 30.27; // degrees North
 
@@ -47,6 +57,11 @@ export async function fetchObservations(
   const url = `${baseUrl}/v2/pws/observations/current?stationId=${encodeURIComponent(stationId)}&format=json&units=e&apiKey=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(url);
+
+  if (response.status === 401 || response.status === 403) {
+    await handleWeatherApiAccessDenied(response.status, `fetchObservations(${stationId})`);
+    return [];
+  }
 
   if (!response.ok || response.status === 204) {
     if (response.status !== 204) {
@@ -191,6 +206,9 @@ export async function isRainForecast(
 
   try {
     const dailyResp = await fetch(dailyUrl, { signal: AbortSignal.timeout(10000) });
+    if (dailyResp.status === 401 || dailyResp.status === 403) {
+      await handleWeatherApiAccessDenied(dailyResp.status, 'isRainForecast(5day)');
+    }
     if (!dailyResp.ok) {
       console.error(`Forecast API error: ${dailyResp.status}`);
       return { rainExpected: true, maxChance: -1, details: `API error ${dailyResp.status}`, pollAfterUtc: new Date(), pollUntilUtc: null };

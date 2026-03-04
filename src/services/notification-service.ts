@@ -118,6 +118,27 @@ export async function notifyCookieExpired(): Promise<boolean> {
   );
 }
 /**
+ * Alert when the Weather Underground API returns 401/403 (key locked or revoked).
+ */
+export async function notifyWeatherApiAccessDenied(
+  statusCode: number,
+  stationOrEndpoint: string
+): Promise<boolean> {
+  return sendAlert(
+    `Weather API access denied (HTTP ${statusCode}) — key may be locked`,
+    `<h3>Weather API Access Denied</h3>
+     <p>The Weather Underground API returned <strong>HTTP ${statusCode}</strong> when calling:</p>
+     <pre style="background:#f5f5f5;padding:12px;border-radius:4px">${stationOrEndpoint}</pre>
+     <p>This usually means the API key has been rate-limited or revoked. All weather API calls have been halted to prevent further lockout.</p>
+     <h4>What to do:</h4>
+     <ol>
+       <li>Check your <a href="https://www.wunderground.com/member/api-keys">Weather Underground API keys page</a></li>
+       <li>If the key is locked, wait for it to reset or generate a new one</li>
+       <li>Update WEATHER_API_KEY in your Vercel environment variables if needed</li>
+     </ol>`
+  );
+}
+/**
  * Daily forecast check notification — shows forecast result and current trail statuses.
  */
 export async function notifyForecastCheck(

@@ -1,7 +1,17 @@
 import { sql } from '@/lib/db';
 import { WeatherObservation } from '@/types';
+import { notifyWeatherApiAccessDenied } from '@/services/notification-service';
 
 const WU_BASE = 'https://api.weather.com';
+
+/**
+ * If the WU API returns 401/403, send an alert and throw to halt all further calls.
+ */
+async function handleWeatherApiAccessDenied(statusCode: number, endpoint: string): Promise<never> {
+  console.error(`Weather API access denied (HTTP ${statusCode}) at ${endpoint}. Halting all weather API calls.`);
+  await notifyWeatherApiAccessDenied(statusCode, endpoint);
+  throw new Error(`Weather API access denied (HTTP ${statusCode}). API key may be locked. Alert email sent.`);
+}
 
 interface NearbyStation {
   stationId: string;
@@ -23,6 +33,9 @@ export async function findNearbyStations(
 
   try {
     const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (resp.status === 401 || resp.status === 403) {
+      await handleWeatherApiAccessDenied(resp.status, `findNearbyStations(${lat},${lon})`);
+    }
     if (!resp.ok) return [];
     const data = await resp.json();
     const loc = data.location;
@@ -55,6 +68,9 @@ async function probeStation(
   const url = `${WU_BASE}/v2/pws/observations/current?stationId=${encodeURIComponent(stationId)}&format=json&units=e&apiKey=${encodeURIComponent(apiKey)}`;
   try {
     const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (resp.status === 401 || resp.status === 403) {
+      await handleWeatherApiAccessDenied(resp.status, `probeStation(${stationId})`);
+    }
     if (resp.status !== 200) return null;
     const data = await resp.json();
     return data.observations?.[0] ?? null;
