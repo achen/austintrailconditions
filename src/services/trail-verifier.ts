@@ -181,12 +181,12 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
  *
  * If a trail is marked "Verified Not Rideable" but there's been no rain
  * within its max_drying_days window, the verification is stale.
- * Transition it to "Probably Rideable" so the dashboard reflects reality.
+ * Transition it to "Predicted Rideable" so the dashboard reflects reality.
  */
 export async function expireStaleVerifications(): Promise<string[]> {
   const result = await sql`
     UPDATE trails
-    SET condition_status = 'Probably Rideable', updated_at = now()
+    SET condition_status = 'Predicted Rideable', updated_at = now()
     WHERE condition_status = 'Verified Not Rideable'
       AND is_archived = false
       AND NOT EXISTS (

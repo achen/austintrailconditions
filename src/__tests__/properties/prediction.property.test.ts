@@ -123,7 +123,7 @@ vi.mock('@/lib/db', () => {
     if (query.includes('SELECT') && query.includes('FROM trails') && query.includes('condition_status IN')) {
       const rows = Array.from(trailsStore.values()).filter(
         (t) =>
-          (t.condition_status === 'Probably Not Rideable' || t.condition_status === 'Probably Rideable') &&
+          (t.condition_status === 'Predicted Not Rideable' || t.condition_status === 'Predicted Rideable') &&
           !t.is_archived &&
           t.updates_enabled
       );
@@ -135,10 +135,10 @@ vi.mock('@/lib/db', () => {
       const trailId = values[0] as string;
       const trail = trailsStore.get(trailId);
       if (trail) {
-        if (query.includes('Probably Rideable') && !query.includes('Not')) {
-          trail.condition_status = 'Probably Rideable';
+        if (query.includes('Predicted Rideable') && !query.includes('Not')) {
+          trail.condition_status = 'Predicted Rideable';
         } else {
-          trail.condition_status = 'Probably Not Rideable';
+          trail.condition_status = 'Predicted Not Rideable';
         }
         trail.updated_at = new Date().toISOString();
       }
@@ -265,7 +265,7 @@ const trailArb: fc.Arbitrary<Trail> = fc.record({
   maxDryingDays: fc.integer({ min: 1, max: 7 }),
   updatesEnabled: fc.constant(true),
   isArchived: fc.constant(false),
-  conditionStatus: fc.constant('Probably Not Rideable' as const),
+  conditionStatus: fc.constant('Predicted Not Rideable' as const),
   createdAt: fc.constant(new Date('2024-01-01')),
   updatedAt: fc.constant(new Date('2024-01-01')),
 });
@@ -391,7 +391,7 @@ describe('Property 8: Drying trails get updated predictions', () => {
         trailArb,
         rainEventArb,
         weatherObsArb,
-        fc.constantFrom('Probably Not Rideable' as const, 'Probably Rideable' as const),
+        fc.constantFrom('Predicted Not Rideable' as const, 'Predicted Rideable' as const),
         async (trailBase, rainEventBase, weatherBase, status) => {
           // Reset stores
           predictionsStore = new Map();
@@ -443,7 +443,7 @@ describe('Property 9: Dry report transitions trail to Verified Rideable and reco
       fc.asyncProperty(
         trailArb,
         rainEventArb,
-        fc.constantFrom('Probably Not Rideable' as const, 'Probably Rideable' as const),
+        fc.constantFrom('Predicted Not Rideable' as const, 'Predicted Rideable' as const),
         fc.date({
           min: new Date('2024-06-01T00:00:00Z'),
           max: new Date('2024-12-01T00:00:00Z'),

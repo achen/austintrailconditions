@@ -174,7 +174,7 @@ async function getActiveStationIds(): Promise<string[]> {
  *
  * Returns true when rain is active OR any trail is still wet/drying.
  * - No active rain + all trails dry → false (forecast-only mode)
- * - Active rain or trails in "Probably Not Rideable" / "Verified Not Rideable" → true
+ * - Active rain or trails in "Predicted Not Rideable" / "Verified Not Rideable" → true
  */
 export async function shouldPollFrequently(): Promise<boolean> {
   // Check for active rain events
@@ -194,7 +194,7 @@ export async function shouldPollFrequently(): Promise<boolean> {
       SELECT 1 FROM trails
       WHERE is_archived = false
         AND updates_enabled = true
-        AND condition_status IN ('Probably Not Rideable', 'Verified Not Rideable')
+        AND condition_status IN ('Predicted Not Rideable', 'Verified Not Rideable')
     ) AS has_drying_trails
   `;
 

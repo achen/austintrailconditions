@@ -22,7 +22,7 @@ function rowToTrail(row: Record<string, unknown>): Trail {
 }
 
 /**
- * Create a new trail with default condition_status "Probably Rideable".
+ * Create a new trail with default condition_status "Predicted Rideable".
  */
 export async function create(data: {
   name: string;

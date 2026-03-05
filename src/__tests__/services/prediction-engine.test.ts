@@ -107,7 +107,7 @@ vi.mock('@/lib/db', () => {
     if (query.includes('SELECT') && query.includes('FROM trails') && query.includes('condition_status IN')) {
       const rows = Array.from(trailsStore.values()).filter(
         (t) =>
-          (t.condition_status === 'Probably Not Rideable' || t.condition_status === 'Probably Rideable') &&
+          (t.condition_status === 'Predicted Not Rideable' || t.condition_status === 'Predicted Rideable') &&
           !t.is_archived &&
           t.updates_enabled
       );
@@ -120,10 +120,10 @@ vi.mock('@/lib/db', () => {
       const trail = trailsStore.get(trailId);
       if (trail) {
         // Determine which status to set based on query content
-        if (query.includes('Probably Rideable') && !query.includes('Not')) {
-          trail.condition_status = 'Probably Rideable';
+        if (query.includes('Predicted Rideable') && !query.includes('Not')) {
+          trail.condition_status = 'Predicted Rideable';
         } else {
-          trail.condition_status = 'Probably Not Rideable';
+          trail.condition_status = 'Predicted Not Rideable';
         }
         trail.updated_at = new Date().toISOString();
       }
@@ -168,7 +168,7 @@ function makeTrail(overrides: Partial<Trail> = {}): Trail {
     maxDryingDays: 3,
     updatesEnabled: true,
     isArchived: false,
-    conditionStatus: 'Probably Not Rideable',
+    conditionStatus: 'Predicted Not Rideable',
     createdAt: new Date('2024-01-01'),
     updatedAt: new Date('2024-01-01'),
     ...overrides,
@@ -489,7 +489,7 @@ describe('PredictionEngine.updatePredictions()', () => {
   });
 
   it('updates predictions for drying trails', async () => {
-    const trail = makeTrail({ conditionStatus: 'Probably Not Rideable' });
+    const trail = makeTrail({ conditionStatus: 'Predicted Not Rideable' });
     addTrailToStore(trail);
 
     const rainEvent = makeRainEvent();
@@ -514,7 +514,7 @@ describe('PredictionEngine.updatePredictions()', () => {
   });
 
   it('skips archived trails', async () => {
-    const trail = makeTrail({ isArchived: true, conditionStatus: 'Probably Not Rideable' });
+    const trail = makeTrail({ isArchived: true, conditionStatus: 'Predicted Not Rideable' });
     addTrailToStore(trail);
 
     const mockClient = {
@@ -530,7 +530,7 @@ describe('PredictionEngine.updatePredictions()', () => {
   });
 
   it('skips trails with updates disabled', async () => {
-    const trail = makeTrail({ updatesEnabled: false, conditionStatus: 'Probably Not Rideable' });
+    const trail = makeTrail({ updatesEnabled: false, conditionStatus: 'Predicted Not Rideable' });
     addTrailToStore(trail);
 
     const mockClient = {

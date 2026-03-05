@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     const wetTrails = await sql`
       SELECT COUNT(*) as count FROM trails
       WHERE is_archived = false
-        AND condition_status IN ('Probably Not Rideable', 'Probably Rideable', 'Verified Not Rideable')
+        AND condition_status IN ('Predicted Not Rideable', 'Predicted Rideable', 'Verified Not Rideable')
     `;
     const wetCount = parseInt(wetTrails.rows[0]?.count as string) || 0;
     const hasWetTrails = wetCount > 0;

@@ -37,7 +37,7 @@ vi.mock('@/lib/db', () => {
         max_drying_days: maxDays,
         updates_enabled: true,
         is_archived: false,
-        condition_status: 'Probably Rideable',
+        condition_status: 'Predicted Rideable',
         created_at: now,
         updated_at: now,
       };
@@ -180,7 +180,7 @@ describe('Property 12: Trail management round-trip', () => {
         expect(trail.maxDryingDays).toBe(input.maxDryingDays);
         expect(trail.isArchived).toBe(false);
         expect(trail.updatesEnabled).toBe(true);
-        expect(trail.conditionStatus).toBe('Probably Rideable');
+        expect(trail.conditionStatus).toBe('Predicted Rideable');
 
         // Verify it appears in listActive
         const active = await listActive();

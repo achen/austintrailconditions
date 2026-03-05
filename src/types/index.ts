@@ -4,8 +4,8 @@
 
 export type ConditionStatus =
   | 'Verified Rideable'
-  | 'Probably Rideable'
-  | 'Probably Not Rideable'
+  | 'Predicted Rideable'
+  | 'Predicted Not Rideable'
   | 'Verified Not Rideable'
   | 'Closed';
 

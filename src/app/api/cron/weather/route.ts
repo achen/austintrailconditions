@@ -44,7 +44,7 @@ export async function GET(request: Request) {
       SELECT EXISTS (
         SELECT 1 FROM trails
         WHERE is_archived = false AND updates_enabled = true
-          AND condition_status IN ('Probably Not Rideable', 'Verified Not Rideable')
+          AND condition_status IN ('Predicted Not Rideable', 'Verified Not Rideable')
       ) AS wet
     `;
     const hasWetTrails = !!wetTrailsResult.rows[0]?.wet;

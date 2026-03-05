@@ -31,7 +31,7 @@ export async function GET(request: Request) {
       WHERE t.is_archived = false
         AND re.is_active = false
         AND re.end_timestamp > now() - interval '7 days'
-        AND t.condition_status IN ('Probably Not Rideable', 'Probably Rideable')
+        AND t.condition_status IN ('Predicted Not Rideable', 'Predicted Rideable')
     `;
     const dryingCount = parseInt(dryingTrails.rows[0]?.count as string) || 0;
 

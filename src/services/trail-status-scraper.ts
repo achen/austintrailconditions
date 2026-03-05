@@ -74,7 +74,7 @@ export async function scrapeTrailStatus(trail: ScrapableTrail): Promise<ScrapeRe
  * Only updates if the scraped status differs from current.
  */
 export async function applyScrapedStatus(result: ScrapeResult): Promise<boolean> {
-  const newStatus = result.isOpen ? 'Verified Rideable' : 'Verified Not Rideable';
+  const newStatus = result.isOpen ? 'Predicted Rideable' : 'Predicted Not Rideable';
 
   const { rowCount } = await sql`
     UPDATE trails

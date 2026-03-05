@@ -16,14 +16,14 @@ function genId() {
 
 const CONDITION_STATUSES: ConditionStatus[] = [
   'Verified Rideable',
-  'Probably Rideable',
-  'Probably Not Rideable',
+  'Predicted Rideable',
+  'Predicted Not Rideable',
   'Verified Not Rideable',
 ];
 
 const DRYING_STATUSES: ConditionStatus[] = [
-  'Probably Not Rideable',
-  'Probably Rideable',
+  'Predicted Not Rideable',
+  'Predicted Rideable',
 ];
 
 vi.mock('@/lib/db', () => {

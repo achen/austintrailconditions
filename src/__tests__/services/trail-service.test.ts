@@ -27,7 +27,7 @@ vi.mock('@/lib/db', () => {
         max_drying_days: maxDays,
         updates_enabled: true,
         is_archived: false,
-        condition_status: 'Probably Rideable',
+        condition_status: 'Predicted Rideable',
         created_at: now,
         updated_at: now,
       };
@@ -54,7 +54,7 @@ vi.mock('@/lib/db', () => {
         max_drying_days: maxDays,
         updates_enabled: updatesEnabled,
         is_archived: false,
-        condition_status: 'Probably Rideable',
+        condition_status: 'Predicted Rideable',
         created_at: now,
         updated_at: now,
       };
@@ -115,7 +115,7 @@ beforeEach(() => {
 });
 
 describe('TrailService.create()', () => {
-  it('creates a trail with default condition status "Probably Rideable"', async () => {
+  it('creates a trail with default condition status "Predicted Rideable"', async () => {
     const trail = await create({
       name: 'Test Trail',
       primaryStationId: 'STATION-1',
@@ -127,7 +127,7 @@ describe('TrailService.create()', () => {
     expect(trail.primaryStationId).toBe('STATION-1');
     expect(trail.dryingRateInPerDay).toBe(2.5);
     expect(trail.maxDryingDays).toBe(3);
-    expect(trail.conditionStatus).toBe('Probably Rideable');
+    expect(trail.conditionStatus).toBe('Predicted Rideable');
     expect(trail.isArchived).toBe(false);
     expect(trail.updatesEnabled).toBe(true);
     expect(trail.description).toBeNull();
