@@ -20,7 +20,7 @@
     },
     {
       "path": "/api/cron/scrape",
-      "schedule": "*/30 * * * *"
+      "schedule": "0 12-23,0-2 * * *"
     }
   ]
 }

@@ -1,16 +1,21 @@
 import { RainEvent, WeatherObservation } from '@/types';
 import { sql } from '@/lib/db';
 
+/** Minimum total precipitation (inches) before a rain event affects trail status. */
+const MIN_RAIN_THRESHOLD_IN = 0.1;
+
 /**
  * RainDetector — Detects and manages rain events from weather observations.
  *
  * Requirements: 3.1, 3.2, 3.3, 3.4
  *
  * - evaluate(): processes observations with precipitation > 0, creating or
- *   extending active rain events per trail, and setting trail status to
- *   "Verified Not Rideable".
+ *   extending active rain events per trail. Only sets trail status to
+ *   "Verified Not Rideable" once the event's total reaches MIN_RAIN_THRESHOLD_IN.
  * - checkForRainEnd(): ends active rain events when 60+ minutes of zero
  *   precipitation have elapsed since the last precipitation observation.
+ *   Events that never reached the threshold are cleaned up without affecting
+ *   trail status.
  */
 
 /**
@@ -104,13 +109,16 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
         affectedEvents.push(mapRowToRainEvent(result.rows[0]));
       }
 
-      // Set trail condition_status to "Verified Not Rideable" (Req 3.4)
-      await sql`
-        UPDATE trails
-        SET condition_status = 'Verified Not Rideable',
-            updated_at = now()
-        WHERE id = ${trail.id}
-      `;
+      // Only flip trail status once the rain event total reaches the threshold
+      const event = affectedEvents[affectedEvents.length - 1];
+      if (event.totalPrecipitationIn >= MIN_RAIN_THRESHOLD_IN) {
+        await sql`
+          UPDATE trails
+          SET condition_status = 'Verified Not Rideable',
+              updated_at = now()
+          WHERE id = ${trail.id}
+        `;
+      }
     }
   }
 
