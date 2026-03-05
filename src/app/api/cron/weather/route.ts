@@ -53,6 +53,19 @@ export async function GET(request: Request) {
       return await pollStations(config, now, hasActiveRain ? 'active-rain' : 'trails-drying');
     }
 
+    // --- Priority 1.5: Previous day's polling window still active → keep polling ---
+    const prevWindowResult = await sql`
+      SELECT poll_after_utc, poll_until_utc FROM weather_forecasts
+      WHERE rain_expected = true
+        AND poll_after_utc <= ${now.toISOString()}
+        AND poll_until_utc >= ${now.toISOString()}
+      ORDER BY forecast_date DESC
+      LIMIT 1
+    `;
+    if (prevWindowResult.rows.length > 0) {
+      return await pollStations(config, now, 'prior-forecast-window');
+    }
+
     // --- Priority 2: Check forecast ---
     const todayStr = now.toISOString().slice(0, 10);
 
