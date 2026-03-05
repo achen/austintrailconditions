@@ -112,10 +112,11 @@ export async function storeObservations(
   for (const obs of observations) {
     const result = await sql`
       INSERT INTO weather_observations (
-        station_id, timestamp, precipitation_in, temperature_f,
+        station_id, trail_id, timestamp, precipitation_in, temperature_f,
         humidity_percent, wind_speed_mph, solar_radiation_wm2, daylight_hours
       ) VALUES (
         ${obs.stationId},
+        ${obs.trailId ?? null},
         ${obs.timestamp.toISOString()},
         ${obs.precipitationIn},
         ${obs.temperatureF},
@@ -124,7 +125,7 @@ export async function storeObservations(
         ${obs.solarRadiationWm2},
         ${obs.daylightHours}
       )
-      ON CONFLICT (station_id, timestamp) DO NOTHING
+      ON CONFLICT (station_id, trail_id, timestamp) DO NOTHING
     `;
     if (result.rowCount && result.rowCount > 0) {
       insertedCount++;
@@ -138,9 +139,18 @@ export async function storeObservations(
  * Get distinct station IDs from all non-archived trails with updates_enabled = true.
  * Avoids redundant API calls when multiple trails share the same station.
  */
-export async function getActiveStationIds(): Promise<string[]> {
+export interface TrailStationMapping {
+  trailId: string;
+  stationId: string;
+}
+
+/**
+ * Get trail-to-station mappings for all active trails.
+ * Returns both trail ID and station ID so observations can be tagged with the trail.
+ */
+export async function getTrailStationMappings(): Promise<TrailStationMapping[]> {
   const result = await sql`
-    SELECT DISTINCT primary_station_id
+    SELECT id, primary_station_id
     FROM trails
     WHERE is_archived = false
       AND updates_enabled = true
@@ -148,7 +158,15 @@ export async function getActiveStationIds(): Promise<string[]> {
       AND primary_station_id != ''
   `;
 
-  return result.rows.map((row) => row.primary_station_id as string);
+  return result.rows.map((row) => ({
+    trailId: row.id as string,
+    stationId: row.primary_station_id as string,
+  }));
+}
+
+async function getActiveStationIds(): Promise<string[]> {
+  const mappings = await getTrailStationMappings();
+  return [...new Set(mappings.map(m => m.stationId))];
 }
 
 /**

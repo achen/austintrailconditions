@@ -3,7 +3,7 @@ import { validateConfig } from '@/services/config-validator';
 import {
   fetchObservations,
   storeObservations,
-  getActiveStationIds,
+  getTrailStationMappings,
   isRainForecast,
 } from '@/services/weather-collector';
 import { evaluate, checkForRainEnd } from '@/services/rain-detector';
@@ -171,20 +171,42 @@ async function pollStations(
   now: Date,
   reason: string
 ) {
-  const stationIds = await getActiveStationIds();
-  if (stationIds.length === 0) {
+  const mappings = await getTrailStationMappings();
+  if (mappings.length === 0) {
     return NextResponse.json({ skipped: true, reason: 'No active stations found' });
+  }
+
+  // Deduplicate stations — multiple trails can share a station
+  const uniqueStations = [...new Set(mappings.map(m => m.stationId))];
+  // Build station → trailIds lookup
+  const stationToTrails = new Map<string, string[]>();
+  for (const m of mappings) {
+    const list = stationToTrails.get(m.stationId) ?? [];
+    list.push(m.trailId);
+    stationToTrails.set(m.stationId, list);
   }
 
   const allObservations: WeatherObservation[] = [];
   let totalStored = 0;
   const errors: string[] = [];
 
-  for (const stationId of stationIds) {
+  for (const stationId of uniqueStations) {
     try {
-      const observations = await fetchObservations(stationId, config.weatherUnderground.apiKey);
-      allObservations.push(...observations);
-      const stored = await storeObservations(observations);
+      const rawObs = await fetchObservations(stationId, config.weatherUnderground.apiKey);
+      const trailIds = stationToTrails.get(stationId) ?? [];
+
+      // Create one observation per trail for this station
+      for (const obs of rawObs) {
+        for (const trailId of trailIds) {
+          allObservations.push({ ...obs, trailId });
+        }
+      }
+
+      // Store with trail context
+      const taggedObs = rawObs.flatMap(obs =>
+        trailIds.map(trailId => ({ ...obs, trailId }))
+      );
+      const stored = await storeObservations(taggedObs);
       totalStored += stored;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -193,7 +215,7 @@ async function pollStations(
     }
   }
 
-  const offlineStations = stationIds.filter(
+  const offlineStations = uniqueStations.filter(
     (sid) => !allObservations.some((o) => o.stationId === sid)
   );
 
@@ -201,7 +223,7 @@ async function pollStations(
   const endedEvents = await checkForRainEnd();
 
   if (offlineStations.length > 0) {
-    await notifyStationsDown(offlineStations, stationIds.length);
+    await notifyStationsDown(offlineStations, uniqueStations.length);
   }
 
   if (rainEvents.length > 0) {
@@ -220,7 +242,7 @@ async function pollStations(
   return NextResponse.json({
     success: true,
     reason,
-    stationsPolled: stationIds.length,
+    stationsPolled: uniqueStations.length,
     observationsFetched: allObservations.length,
     observationsStored: totalStored,
     offlineStations: offlineStations.length > 0 ? offlineStations : undefined,

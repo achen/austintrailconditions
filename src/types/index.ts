@@ -34,6 +34,7 @@ export interface Trail {
 
 export interface WeatherObservation {
   stationId: string;
+  trailId?: string;
   timestamp: Date;
   precipitationIn: number;
   temperatureF: number;

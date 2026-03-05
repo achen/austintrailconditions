@@ -11,7 +11,7 @@ const MIN_RAIN_THRESHOLD_IN = 0.1;
  *
  * - evaluate(): processes observations with precipitation > 0, creating or
  *   extending active rain events per trail. Only sets trail status to
- *   "Verified Not Rideable" once the event's total reaches MIN_RAIN_THRESHOLD_IN.
+ *   "Probably Not Rideable" once the event's total reaches MIN_RAIN_THRESHOLD_IN.
  * - checkForRainEnd(): ends active rain events when 60+ minutes of zero
  *   precipitation have elapsed since the last precipitation observation.
  *   Events that never reached the threshold are cleaned up without affecting
@@ -71,7 +71,7 @@ function mapRowToRainEvent(row: Record<string, unknown>): RainEvent {
  *  1. Find trails using that station (via primary_station_id)
  *  2. If trail has an active rain event → extend it (add precipitation)
  *  3. If trail has no active rain event → create one
- *  4. Set trail condition_status to "Verified Not Rideable"
+ *  4. Set trail condition_status to "Probably Not Rideable"
  *
  * Returns all rain events that were created or updated.
  */
@@ -114,7 +114,7 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
       if (event.totalPrecipitationIn >= MIN_RAIN_THRESHOLD_IN) {
         await sql`
           UPDATE trails
-          SET condition_status = 'Verified Not Rideable',
+          SET condition_status = 'Probably Not Rideable',
               updated_at = now()
           WHERE id = ${trail.id}
         `;
@@ -154,10 +154,10 @@ export async function checkForRainEnd(): Promise<RainEvent[]> {
   for (const row of activeResult.rows) {
     const stationId = row.primary_station_id as string;
 
-    // Get the latest weather observation for this station
+    // Get the latest weather observation for this trail
     const latestObsResult = await sql`
       SELECT timestamp FROM weather_observations
-      WHERE station_id = ${stationId}
+      WHERE trail_id = ${row.trail_id as string}
       ORDER BY timestamp DESC
       LIMIT 1
     `;
@@ -169,7 +169,7 @@ export async function checkForRainEnd(): Promise<RainEvent[]> {
     // Get the most recent observation with precipitation > 0
     const lastRainResult = await sql`
       SELECT timestamp FROM weather_observations
-      WHERE station_id = ${stationId}
+      WHERE trail_id = ${row.trail_id as string}
         AND precipitation_in > 0
       ORDER BY timestamp DESC
       LIMIT 1

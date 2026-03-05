@@ -274,12 +274,12 @@ export async function updatePredictions(openaiClient?: OpenAI): Promise<Predicti
       isActive: rainResult.rows[0].is_active as boolean,
     };
 
-    // Get latest weather observation for this trail's station
+    // Get latest weather observation for this trail
     const weatherResult = await sql`
       SELECT station_id, timestamp, precipitation_in, temperature_f,
              humidity_percent, wind_speed_mph, solar_radiation_wm2, daylight_hours
       FROM weather_observations
-      WHERE station_id = ${trail.primaryStationId}
+      WHERE trail_id = ${trail.id}
       ORDER BY timestamp DESC
       LIMIT 1
     `;

@@ -27,13 +27,6 @@ export async function storeDryingConditions(
 
   if (actualDryingHours <= 0) return; // Bad data
 
-  // Get the trail's station
-  const trailResult = await sql`
-    SELECT primary_station_id FROM trails WHERE id = ${trailId}
-  `;
-  if (trailResult.rows.length === 0) return;
-  const stationId = trailResult.rows[0].primary_station_id as string;
-
   // Aggregate weather observations during the drying period
   const weatherResult = await sql`
     SELECT
@@ -48,7 +41,7 @@ export async function storeDryingConditions(
       MAX(solar_radiation_wm2) as max_solar,
       SUM(daylight_hours) as total_daylight
     FROM weather_observations
-    WHERE station_id = ${stationId}
+    WHERE trail_id = ${trailId}
       AND timestamp >= ${rainEnd.toISOString()}
       AND timestamp <= ${actualDryTime.toISOString()}
   `;

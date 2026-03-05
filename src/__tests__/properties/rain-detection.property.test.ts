@@ -84,7 +84,7 @@ vi.mock('@/lib/db', () => {
       const trailId = values[0] as string;
       const trail = trailsStore.get(trailId);
       if (trail) {
-        trail.condition_status = 'Verified Not Rideable';
+        trail.condition_status = 'Probably Not Rideable';
         trail.updated_at = new Date().toISOString();
       }
       return Promise.resolve({ rows: [], rowCount: trail ? 1 : 0 });
@@ -191,7 +191,7 @@ describe('Property 5: Precipitation creates rain event with Wet status', () => {
     idCounter = 0;
   });
 
-  it('for any observation with precipitation > 0 associated with a trail, evaluate() creates an active rain event and sets trail status to "Verified Not Rideable"', async () => {
+  it('for any observation with precipitation > 0 associated with a trail, evaluate() creates an active rain event and sets trail status to "Probably Not Rideable"', async () => {
     await fc.assert(
       fc.asyncProperty(
         trailIdArb,

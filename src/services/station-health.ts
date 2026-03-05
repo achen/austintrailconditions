@@ -95,6 +95,11 @@ export async function autoReplaceOfflineStations(
 
   const replacements: Array<{ trailName: string; oldStation: string; newStation: string; distanceMi: number }> = [];
 
+  // Collect all currently-assigned stations so we don't double-assign
+  const assignedStations = new Set(
+    trails.rows.map(t => t.primary_station_id as string).filter(Boolean)
+  );
+
   for (const trail of trails.rows) {
     const stationId = trail.primary_station_id as string;
     if (!stationId) continue;
@@ -106,15 +111,18 @@ export async function autoReplaceOfflineStations(
     const lon = parseFloat(trail.longitude as string);
     const nearby = await findNearbyStations(lat, lon, apiKey, 5);
 
-    // Find first nearby station that's different from current and actually responds
+    // Find first nearby station that's different from current, not used by another trail, and responds
     for (const candidate of nearby) {
       if (candidate.stationId === stationId) continue;
+      if (assignedStations.has(candidate.stationId)) continue;
       const check = await probeStation(candidate.stationId, apiKey);
       if (check) {
         await sql`
           UPDATE trails SET primary_station_id = ${candidate.stationId}, updated_at = now()
           WHERE id = ${trail.id as string}
         `;
+        assignedStations.delete(stationId);
+        assignedStations.add(candidate.stationId);
         replacements.push({
           trailName: trail.name as string,
           oldStation: stationId,
