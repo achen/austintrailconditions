@@ -166,7 +166,7 @@ export async function getTrailStationMappings(): Promise<TrailStationMapping[]> 
 
 async function getActiveStationIds(): Promise<string[]> {
   const mappings = await getTrailStationMappings();
-  return [...new Set(mappings.map(m => m.stationId))];
+  return Array.from(new Set(mappings.map(m => m.stationId)));
 }
 
 /**
