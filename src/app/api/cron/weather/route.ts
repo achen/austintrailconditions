@@ -177,7 +177,7 @@ async function pollStations(
   }
 
   // Deduplicate stations — multiple trails can share a station
-  const uniqueStations = [...new Set(mappings.map(m => m.stationId))];
+  const uniqueStations = Array.from(new Set(mappings.map(m => m.stationId)));
   // Build station → trailIds lookup
   const stationToTrails = new Map<string, string[]>();
   for (const m of mappings) {
