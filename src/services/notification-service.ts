@@ -74,13 +74,13 @@ export async function notifyCronFailure(
 export async function notifyRainDetected(
   eventsCreated: number,
   totalPrecipitation: number,
-  trailStatuses?: Array<{ name: string; status: string }>
+  trailStatuses?: Array<{ name: string; status: string; rainAccum?: number }>
 ): Promise<boolean> {
   const trailTable = trailStatuses && trailStatuses.length > 0
     ? `<h3>Current Trail Statuses</h3>
        <table style="border-collapse:collapse;font-size:14px">
-         <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Trail</th><th style="padding:4px 8px;text-align:left">Status</th></tr>
-         ${trailStatuses.map(t => `<tr><td style="padding:4px 8px">${t.name}</td><td style="padding:4px 8px">${t.status}</td></tr>`).join('')}
+         <tr style="background:#f0f0f0"><th style="padding:4px 8px;text-align:left">Trail</th><th style="padding:4px 8px;text-align:left">Status</th><th style="padding:4px 8px;text-align:right">Rain Accum</th></tr>
+         ${trailStatuses.map(t => `<tr><td style="padding:4px 8px">${t.name}</td><td style="padding:4px 8px">${t.status}</td><td style="padding:4px 8px;text-align:right">${t.rainAccum != null ? t.rainAccum.toFixed(2) + '"' : '—'}</td></tr>`).join('')}
        </table>`
     : '';
 

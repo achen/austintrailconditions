@@ -228,6 +228,17 @@ async function pollStations(
 
   if (rainEvents.length > 0) {
     const totalPrecip = allObservations.reduce((sum, o) => sum + o.precipitationIn, 0);
+    // Get active rain event totals per trail for the email
+    const rainAccumResult = await sql`
+      SELECT t.name, re.total_precipitation_in
+      FROM rain_events re
+      JOIN trails t ON t.id = re.trail_id
+      WHERE re.is_active = true
+    `;
+    const rainAccumMap = new Map<string, number>();
+    for (const r of rainAccumResult.rows) {
+      rainAccumMap.set(r.name as string, Number(r.total_precipitation_in));
+    }
     const trailStatusResult = await sql`
       SELECT name, condition_status FROM trails
       WHERE is_archived = false ORDER BY name ASC
@@ -235,6 +246,7 @@ async function pollStations(
     const trailStatuses = trailStatusResult.rows.map(r => ({
       name: r.name as string,
       status: r.condition_status as string,
+      rainAccum: rainAccumMap.get(r.name as string) ?? undefined,
     }));
     await notifyRainDetected(rainEvents.length, totalPrecip, trailStatuses);
   }
