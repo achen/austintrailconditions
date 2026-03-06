@@ -138,6 +138,22 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
  *
  * Returns the list of rain events that were ended.
  */
+export /**
+ * Check all active rain events and end those where 60+ minutes of zero
+ * precipitation have elapsed since the last precipitation observation.
+ *
+ * For each active rain event:
+ *  1. Look up the trail's primary station
+ *  2. Find the most recent weather observation for that station (by station_id)
+ *  3. Find the most recent observation with precipitation > 0 for that station
+ *  4. If the gap between the latest observation and the last rainy observation
+ *     is >= 60 minutes, end the rain event
+ *
+ * Uses station_id (not trail_id) for observation lookups so that trails sharing
+ * a station all see the same weather data.
+ *
+ * Returns the list of rain events that were ended.
+ */
 export async function checkForRainEnd(): Promise<RainEvent[]> {
   const endedEvents: RainEvent[] = [];
 
@@ -154,10 +170,10 @@ export async function checkForRainEnd(): Promise<RainEvent[]> {
   for (const row of activeResult.rows) {
     const stationId = row.primary_station_id as string;
 
-    // Get the latest weather observation for this trail
+    // Get the latest weather observation for this station
     const latestObsResult = await sql`
       SELECT timestamp FROM weather_observations
-      WHERE trail_id = ${row.trail_id as string}
+      WHERE station_id = ${stationId}
       ORDER BY timestamp DESC
       LIMIT 1
     `;
@@ -166,10 +182,10 @@ export async function checkForRainEnd(): Promise<RainEvent[]> {
 
     const latestObsTime = new Date(latestObsResult.rows[0].timestamp as string);
 
-    // Get the most recent observation with precipitation > 0
+    // Get the most recent observation with precipitation > 0 for this station
     const lastRainResult = await sql`
       SELECT timestamp FROM weather_observations
-      WHERE trail_id = ${row.trail_id as string}
+      WHERE station_id = ${stationId}
         AND precipitation_in > 0
       ORDER BY timestamp DESC
       LIMIT 1

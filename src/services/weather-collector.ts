@@ -102,6 +102,17 @@ export async function fetchObservations(
  * Uses ON CONFLICT DO NOTHING for deduplication by (station_id, timestamp).
  * Returns the count of newly inserted records.
  */
+export /**
+ * Store weather observations in the database.
+ * Uses ON CONFLICT DO NOTHING for deduplication by (station_id, trail_id, timestamp).
+ *
+ * IMPORTANT: The Weather Underground API returns cumulative daily precipitation
+ * (precipTotal), not incremental. We convert to incremental by subtracting the
+ * previous observation's value. If the new value is less than the previous
+ * (daily reset at midnight), we treat the new value as the increment.
+ *
+ * Returns the count of newly inserted records.
+ */
 export async function storeObservations(
   observations: WeatherObservation[]
 ): Promise<number> {
@@ -110,6 +121,25 @@ export async function storeObservations(
   let insertedCount = 0;
 
   for (const obs of observations) {
+    // Look up the previous observation for this station+trail to compute delta
+    const prevResult = await sql`
+      SELECT precipitation_in FROM weather_observations
+      WHERE station_id = ${obs.stationId}
+        AND trail_id = ${obs.trailId ?? null}
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `;
+
+    let incrementalPrecip = obs.precipitationIn;
+    if (prevResult.rows.length > 0) {
+      const prevPrecip = Number(prevResult.rows[0].precipitation_in);
+      if (obs.precipitationIn >= prevPrecip) {
+        // Same day — delta is the difference
+        incrementalPrecip = obs.precipitationIn - prevPrecip;
+      }
+      // If new < prev, daily reset occurred — new value IS the increment
+    }
+
     const result = await sql`
       INSERT INTO weather_observations (
         station_id, trail_id, timestamp, precipitation_in, temperature_f,
@@ -118,7 +148,7 @@ export async function storeObservations(
         ${obs.stationId},
         ${obs.trailId ?? null},
         ${obs.timestamp.toISOString()},
-        ${obs.precipitationIn},
+        ${incrementalPrecip},
         ${obs.temperatureF},
         ${obs.humidityPercent},
         ${obs.windSpeedMph},
