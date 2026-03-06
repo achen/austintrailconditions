@@ -85,7 +85,7 @@ export async function POST(request: Request) {
 
     const verifications = await applyVerifiedStatuses();
 
-    // Expire stale "Verified Not Rideable" statuses
+    // Expire stale "Observed Wet" statuses
     await expireStaleVerifications();
 
     // Build a map of trail status changes from verifications

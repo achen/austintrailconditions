@@ -17,8 +17,8 @@ interface VerificationResult {
  * Apply verified trail status updates based on classified Facebook posts.
  *
  * When someone reports a trail as dry or wet with high confidence:
- * - dry → "Verified Rideable"
- * - wet → "Verified Not Rideable"
+ * - dry → "Observed Dry"
+ * - wet → "Observed Wet"
  *
  * Only updates trails that have updates_enabled = true.
  * Also records actual dry time for prediction accuracy tracking.
@@ -54,8 +54,8 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
     const postTimestamp = new Date(row.timestamp as string);
 
     const newStatus = classification === 'dry'
-      ? 'Verified Rideable'
-      : 'Verified Not Rideable';
+      ? 'Observed Dry'
+      : 'Observed Wet';
 
     for (const trailName of trailNames) {
       // Find the trail by name
@@ -177,17 +177,17 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
   return results;
 }
 /**
- * Expire stale "Verified Not Rideable" statuses.
+ * Expire stale "Observed Wet" statuses.
  *
- * If a trail is marked "Verified Not Rideable" but there's been no rain
+ * If a trail is marked "Observed Wet" but there's been no rain
  * within its max_drying_days window, the verification is stale.
- * Transition it to "Predicted Rideable" so the dashboard reflects reality.
+ * Transition it to "Predicted Dry" so the dashboard reflects reality.
  */
 export async function expireStaleVerifications(): Promise<string[]> {
   const result = await sql`
     UPDATE trails
-    SET condition_status = 'Predicted Rideable', updated_at = now()
-    WHERE condition_status = 'Verified Not Rideable'
+    SET condition_status = 'Predicted Dry', updated_at = now()
+    WHERE condition_status = 'Observed Wet'
       AND is_archived = false
       AND NOT EXISTS (
         SELECT 1 FROM rain_events
@@ -200,7 +200,7 @@ export async function expireStaleVerifications(): Promise<string[]> {
 
   const expired = result.rows.map(r => r.name as string);
   if (expired.length > 0) {
-    console.log(`Expired stale "Verified Not Rideable" for: ${expired.join(', ')}`);
+    console.log(`Expired stale "Observed Wet" for: ${expired.join(', ')}`);
   }
   return expired;
 }

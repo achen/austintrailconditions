@@ -79,7 +79,7 @@ vi.mock('@/lib/db', () => {
       const trailId = values[0] as string;
       const trail = trailsStore.get(trailId);
       if (trail) {
-        trail.condition_status = 'Predicted Not Rideable';
+        trail.condition_status = 'Predicted Wet';
         trail.updated_at = new Date().toISOString();
       }
       return Promise.resolve({ rows: [], rowCount: trail ? 1 : 0 });
@@ -129,7 +129,7 @@ function addTrail(id: string, stationId: string) {
     id,
     primary_station_id: stationId,
     is_archived: false,
-    condition_status: 'Predicted Rideable',
+    condition_status: 'Predicted Dry',
     updated_at: new Date().toISOString(),
   });
 }
@@ -209,7 +209,7 @@ describe('RainDetector.evaluate()', () => {
     expect(events[0].totalPrecipitationIn).toBe(0.5); // 0.3 + 0.2
   });
 
-  it('sets trail condition_status to "Predicted Not Rideable" during rain', async () => {
+  it('sets trail condition_status to "Predicted Wet" during rain', async () => {
     addTrail('trail-1', 'STATION-A');
 
     const obs: WeatherObservation = {
@@ -226,7 +226,7 @@ describe('RainDetector.evaluate()', () => {
     await evaluate([obs]);
 
     const trail = trailsStore.get('trail-1');
-    expect(trail?.condition_status).toBe('Predicted Not Rideable');
+    expect(trail?.condition_status).toBe('Predicted Wet');
   });
 
   it('ignores observations with zero precipitation', async () => {

@@ -31,7 +31,7 @@ export async function GET(request: Request) {
       WHERE t.is_archived = false
         AND re.is_active = false
         AND re.end_timestamp > now() - interval '7 days'
-        AND t.condition_status IN ('Predicted Not Rideable', 'Predicted Rideable')
+        AND t.condition_status IN ('Predicted Wet', 'Predicted Dry')
     `;
     const dryingCount = parseInt(dryingTrails.rows[0]?.count as string) || 0;
 
@@ -118,7 +118,7 @@ export async function GET(request: Request) {
     // 6. Apply verified statuses based on classified posts
     const verifications = await applyVerifiedStatuses();
 
-    // 7. Expire stale "Verified Not Rideable" statuses
+    // 7. Expire stale "Observed Wet" statuses
     const expired = await expireStaleVerifications();
 
     return NextResponse.json({

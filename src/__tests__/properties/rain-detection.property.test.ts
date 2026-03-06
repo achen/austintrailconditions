@@ -84,7 +84,7 @@ vi.mock('@/lib/db', () => {
       const trailId = values[0] as string;
       const trail = trailsStore.get(trailId);
       if (trail) {
-        trail.condition_status = 'Predicted Not Rideable';
+        trail.condition_status = 'Predicted Wet';
         trail.updated_at = new Date().toISOString();
       }
       return Promise.resolve({ rows: [], rowCount: trail ? 1 : 0 });
@@ -134,7 +134,7 @@ function addTrail(id: string, stationId: string) {
     id,
     primary_station_id: stationId,
     is_archived: false,
-    condition_status: 'Predicted Rideable',
+    condition_status: 'Predicted Dry',
     updated_at: new Date().toISOString(),
   });
 }
@@ -191,7 +191,7 @@ describe('Property 5: Precipitation creates rain event with Wet status', () => {
     idCounter = 0;
   });
 
-  it('for any observation with precipitation > 0 associated with a trail, evaluate() creates an active rain event and sets trail status to "Predicted Not Rideable"', async () => {
+  it('for any observation with precipitation > 0 associated with a trail, evaluate() creates an active rain event and sets trail status to "Predicted Wet"', async () => {
     await fc.assert(
       fc.asyncProperty(
         trailIdArb,
@@ -228,10 +228,10 @@ describe('Property 5: Precipitation creates rain event with Wet status', () => {
           expect(trailEvent!.isActive).toBe(true);
           expect(trailEvent!.totalPrecipitationIn).toBeCloseTo(precip, 5);
 
-          // Trail condition_status should be "Verified Not Rideable"
+          // Trail condition_status should be "Observed Wet"
           const trail = trailsStore.get(trailId);
           expect(trail).toBeDefined();
-          expect(trail!.condition_status).toBe('Verified Not Rideable');
+          expect(trail!.condition_status).toBe('Observed Wet');
         }
       ),
       { numRuns: 100 }

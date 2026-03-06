@@ -11,7 +11,7 @@ const MIN_RAIN_THRESHOLD_IN = 0.1;
  *
  * - evaluate(): processes observations with precipitation > 0, creating or
  *   extending active rain events per trail. Only sets trail status to
- *   "Predicted Not Rideable" once the event's total reaches MIN_RAIN_THRESHOLD_IN.
+ *   "Predicted Wet" once the event's total reaches MIN_RAIN_THRESHOLD_IN.
  * - checkForRainEnd(): ends active rain events when 60+ minutes of zero
  *   precipitation have elapsed since the last precipitation observation.
  *   Events that never reached the threshold are cleaned up without affecting
@@ -71,7 +71,7 @@ function mapRowToRainEvent(row: Record<string, unknown>): RainEvent {
  *  1. Find trails using that station (via primary_station_id)
  *  2. If trail has an active rain event → extend it (add precipitation)
  *  3. If trail has no active rain event → create one
- *  4. Set trail condition_status to "Predicted Not Rideable"
+ *  4. Set trail condition_status to "Predicted Wet"
  *
  * Returns all rain events that were created or updated.
  */
@@ -114,7 +114,7 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
       if (event.totalPrecipitationIn >= MIN_RAIN_THRESHOLD_IN) {
         await sql`
           UPDATE trails
-          SET condition_status = 'Predicted Not Rideable',
+          SET condition_status = 'Predicted Wet',
               updated_at = now()
           WHERE id = ${trail.id}
         `;

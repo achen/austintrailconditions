@@ -9,7 +9,7 @@ import { notifyCronFailure } from '@/services/notification-service';
  *
  * Vercel Cron endpoint for prediction updates.
  * - Validates CRON_SECRET authorization
- * - Expires stale "Verified Not Rideable" statuses
+ * - Expires stale "Observed Wet" statuses
  * - Updates predictions for all drying trails (Req 4.3, 4.4)
  *
  * Note: Verified status changes (Req 4.5, 4.6) are handled exclusively
@@ -29,7 +29,7 @@ export async function GET(request: Request) {
     // 2. Validate configuration
     validateConfig();
 
-    // 3. Expire stale "Verified Not Rideable" statuses
+    // 3. Expire stale "Observed Wet" statuses
     const expired = await expireStaleVerifications();
 
     // 4. Update predictions for all drying trails (Req 4.3, 4.4)

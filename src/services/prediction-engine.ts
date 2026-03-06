@@ -199,10 +199,10 @@ export async function predict(
               created_at, updated_at, input_data
   `;
 
-  // Set trail status to "Predicted Not Rideable" (Req 4.1)
+  // Set trail status to "Predicted Wet" (Req 4.1)
   await sql`
     UPDATE trails
-    SET condition_status = 'Predicted Not Rideable',
+    SET condition_status = 'Predicted Wet',
         updated_at = now()
     WHERE id = ${trail.id}
   `;
@@ -211,14 +211,14 @@ export async function predict(
 }
 
 /**
- * Update predictions for all trails with status "Predicted Not Rideable" or "Predicted Rideable".
+ * Update predictions for all trails with status "Predicted Wet" or "Predicted Dry".
  *
  * For each drying trail:
  *  1. Get the most recent rain event
  *  2. Get the latest weather observation for the trail's station
  *  3. Get historical outcomes for context
  *  4. Generate an updated prediction
- *  5. If predicted dry time has passed, transition to "Predicted Rideable" (Req 4.4)
+ *  5. If predicted dry time has passed, transition to "Predicted Dry" (Req 4.4)
  *
  * Returns all updated predictions.
  */
@@ -231,7 +231,7 @@ export async function updatePredictions(openaiClient?: OpenAI): Promise<Predicti
            max_drying_days, updates_enabled, is_archived, condition_status,
            created_at, updated_at
     FROM trails
-    WHERE condition_status IN ('Predicted Not Rideable', 'Predicted Rideable')
+    WHERE condition_status IN ('Predicted Wet', 'Predicted Dry')
       AND is_archived = false
   `;
 
@@ -383,15 +383,15 @@ export async function updatePredictions(openaiClient?: OpenAI): Promise<Predicti
 
     updatedPredictions.push(prediction);
 
-    // Transition to "Predicted Rideable" if predicted dry time has passed (Req 4.4)
+    // Transition to "Predicted Dry" if predicted dry time has passed (Req 4.4)
     // Only auto-update status for trails with updates enabled
     if (predictedDryTime <= new Date() && trail.updatesEnabled) {
       await sql`
         UPDATE trails
-        SET condition_status = 'Predicted Rideable',
+        SET condition_status = 'Predicted Dry',
             updated_at = now()
         WHERE id = ${trail.id}
-          AND condition_status = 'Predicted Not Rideable'
+          AND condition_status = 'Predicted Wet'
       `;
     }
   }

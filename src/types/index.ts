@@ -3,10 +3,10 @@
 // --- Condition Status ---
 
 export type ConditionStatus =
-  | 'Verified Rideable'
-  | 'Predicted Rideable'
-  | 'Predicted Not Rideable'
-  | 'Verified Not Rideable'
+  | 'Observed Dry'
+  | 'Predicted Dry'
+  | 'Predicted Wet'
+  | 'Observed Wet'
   | 'Closed';
 
 // --- Classification ---

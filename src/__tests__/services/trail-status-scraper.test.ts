@@ -5,7 +5,7 @@ const TRAIL = {
   id: 'test-id',
   name: 'Reimers Ranch',
   status_url: 'https://parks.traviscountytx.gov/parks/reimers-ranch',
-  condition_status: 'Predicted Rideable',
+  condition_status: 'Predicted Dry',
 };
 
 const OPEN_HTML = `

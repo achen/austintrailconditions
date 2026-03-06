@@ -12,7 +12,7 @@ import type {
 // **Validates: Requirements 4.1, 4.2, 10.2**
 // Feature: trail-conditions-predictor, Property 8: Drying trails get updated predictions
 // **Validates: Requirements 4.3**
-// Feature: trail-conditions-predictor, Property 9: Dry report transitions trail to Verified Rideable and records outcome
+// Feature: trail-conditions-predictor, Property 9: Dry report transitions trail to Observed Dry and records outcome
 // **Validates: Requirements 4.5, 10.1**
 // Feature: trail-conditions-predictor, Property 10: Fallback prediction produces valid result
 // **Validates: Requirements 4.6**
@@ -123,7 +123,7 @@ vi.mock('@/lib/db', () => {
     if (query.includes('SELECT') && query.includes('FROM trails') && query.includes('condition_status IN')) {
       const rows = Array.from(trailsStore.values()).filter(
         (t) =>
-          (t.condition_status === 'Predicted Not Rideable' || t.condition_status === 'Predicted Rideable') &&
+          (t.condition_status === 'Predicted Wet' || t.condition_status === 'Predicted Dry') &&
           !t.is_archived &&
           t.updates_enabled
       );
@@ -135,10 +135,10 @@ vi.mock('@/lib/db', () => {
       const trailId = values[0] as string;
       const trail = trailsStore.get(trailId);
       if (trail) {
-        if (query.includes('Predicted Rideable') && !query.includes('Not')) {
-          trail.condition_status = 'Predicted Rideable';
+        if (query.includes('Predicted Dry') && !query.includes('Wet')) {
+          trail.condition_status = 'Predicted Dry';
         } else {
-          trail.condition_status = 'Predicted Not Rideable';
+          trail.condition_status = 'Predicted Wet';
         }
         trail.updated_at = new Date().toISOString();
       }
@@ -265,7 +265,7 @@ const trailArb: fc.Arbitrary<Trail> = fc.record({
   maxDryingDays: fc.integer({ min: 1, max: 7 }),
   updatesEnabled: fc.constant(true),
   isArchived: fc.constant(false),
-  conditionStatus: fc.constant('Predicted Not Rideable' as const),
+  conditionStatus: fc.constant('Predicted Wet' as const),
   createdAt: fc.constant(new Date('2024-01-01')),
   updatedAt: fc.constant(new Date('2024-01-01')),
 });
@@ -391,7 +391,7 @@ describe('Property 8: Drying trails get updated predictions', () => {
         trailArb,
         rainEventArb,
         weatherObsArb,
-        fc.constantFrom('Predicted Not Rideable' as const, 'Predicted Rideable' as const),
+        fc.constantFrom('Predicted Wet' as const, 'Predicted Dry' as const),
         async (trailBase, rainEventBase, weatherBase, status) => {
           // Reset stores
           predictionsStore = new Map();
@@ -429,7 +429,7 @@ describe('Property 8: Drying trails get updated predictions', () => {
   });
 });
 
-describe('Property 9: Dry report transitions trail to Verified Rideable and records outcome', () => {
+describe('Property 9: Dry report transitions trail to Observed Dry and records outcome', () => {
   beforeEach(() => {
     predictionsStore = new Map();
     trailsStore = new Map();
@@ -438,12 +438,12 @@ describe('Property 9: Dry report transitions trail to Verified Rideable and reco
     idCounter = 0;
   });
 
-  it('for any drying trail with a dry report, processing sets status to Verified Rideable and records actual dry time', async () => {
+  it('for any drying trail with a dry report, processing sets status to Observed Dry and records actual dry time', async () => {
     await fc.assert(
       fc.asyncProperty(
         trailArb,
         rainEventArb,
-        fc.constantFrom('Predicted Not Rideable' as const, 'Predicted Rideable' as const),
+        fc.constantFrom('Predicted Wet' as const, 'Predicted Dry' as const),
         fc.date({
           min: new Date('2024-06-01T00:00:00Z'),
           max: new Date('2024-12-01T00:00:00Z'),
@@ -471,14 +471,14 @@ describe('Property 9: Dry report transitions trail to Verified Rideable and reco
           // 1. Record actual outcome
           await recordActualOutcome(trail.id, rainEvent.id, reportTime);
 
-          // 2. Update trail status to "Verified Rideable"
+          // 2. Update trail status to "Observed Dry"
           const trailRecord = trailsStore.get(trail.id);
           expect(trailRecord).toBeDefined();
-          trailRecord!.condition_status = 'Verified Rideable';
+          trailRecord!.condition_status = 'Observed Dry';
           trailRecord!.updated_at = new Date().toISOString();
 
-          // Verify trail status is now "Verified Rideable"
-          expect(trailRecord!.condition_status).toBe('Verified Rideable');
+          // Verify trail status is now "Observed Dry"
+          expect(trailRecord!.condition_status).toBe('Observed Dry');
 
           // Verify the prediction has the actual dry time recorded
           const pred = predictionsStore.get(predId);
