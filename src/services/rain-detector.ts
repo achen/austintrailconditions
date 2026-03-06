@@ -131,19 +131,6 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
  *
  * For each active rain event:
  *  1. Look up the trail's primary station
- *  2. Find the most recent weather observation for that station
- *  3. Find the most recent observation with precipitation > 0 for that station
- *  4. If the gap between the latest observation and the last rainy observation
- *     is >= 60 minutes, end the rain event
- *
- * Returns the list of rain events that were ended.
- */
-export /**
- * Check all active rain events and end those where 60+ minutes of zero
- * precipitation have elapsed since the last precipitation observation.
- *
- * For each active rain event:
- *  1. Look up the trail's primary station
  *  2. Find the most recent weather observation for that station (by station_id)
  *  3. Find the most recent observation with precipitation > 0 for that station
  *  4. If the gap between the latest observation and the last rainy observation
