@@ -99,11 +99,6 @@ export async function fetchObservations(
 
 /**
  * Store weather observations in the database.
- * Uses ON CONFLICT DO NOTHING for deduplication by (station_id, timestamp).
- * Returns the count of newly inserted records.
- */
-export /**
- * Store weather observations in the database.
  * Uses ON CONFLICT DO NOTHING for deduplication by (station_id, trail_id, timestamp).
  *
  * IMPORTANT: The Weather Underground API returns cumulative daily precipitation
