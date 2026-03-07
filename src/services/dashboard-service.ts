@@ -28,7 +28,7 @@ export async function getTrailsWithConditions(): Promise<DashboardTrail[]> {
       WHERE trail_id = t.id
       ORDER BY created_at DESC
       LIMIT 1
-    ) p ON t.condition_status IN ('Predicted Wet', 'Predicted Dry')
+    ) p ON t.condition_status = 'Predicted Wet'
     WHERE t.is_archived = false
     ORDER BY t.name ASC
   `;
