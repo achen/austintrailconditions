@@ -51,7 +51,7 @@ export async function create(data: {
  */
 export async function update(
   id: string,
-  data: Partial<Pick<Trail, 'name' | 'description' | 'primaryStationId' | 'dryingRateInPerDay' | 'maxDryingDays' | 'updatesEnabled'>>
+  data: Partial<Pick<Trail, 'name' | 'description' | 'primaryStationId' | 'dryingRateInPerDay' | 'maxDryingDays' | 'updatesEnabled' | 'conditionStatus'>>
 ): Promise<Trail> {
   // Build SET clauses only for fields that were explicitly provided
   const hasName = 'name' in data;
@@ -60,6 +60,7 @@ export async function update(
   const hasRate = 'dryingRateInPerDay' in data;
   const hasMaxDays = 'maxDryingDays' in data;
   const hasUpdates = 'updatesEnabled' in data;
+  const hasCondition = 'conditionStatus' in data;
 
   const result = await sql`
     UPDATE trails
@@ -70,6 +71,7 @@ export async function update(
       drying_rate_in_per_day = CASE WHEN ${hasRate} THEN ${data.dryingRateInPerDay ?? null} ELSE drying_rate_in_per_day END,
       max_drying_days = CASE WHEN ${hasMaxDays} THEN ${data.maxDryingDays ?? null} ELSE max_drying_days END,
       updates_enabled = CASE WHEN ${hasUpdates} THEN ${data.updatesEnabled ?? null} ELSE updates_enabled END,
+      condition_status = CASE WHEN ${hasCondition} THEN ${data.conditionStatus ?? null} ELSE condition_status END,
       updated_at = now()
     WHERE id = ${id}
     RETURNING *
