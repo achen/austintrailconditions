@@ -1,7 +1,20 @@
-import { formatDistanceToNow, format } from 'date-fns';
+import { formatDistanceToNow } from 'date-fns';
 
 import { getTrailsWithConditions, getPredictionAccuracy } from '@/services/dashboard-service';
 import FeedbackButton from './feedback-button';
+
+const CT = 'America/Chicago';
+
+function formatCT(date: Date): string {
+  return date.toLocaleString('en-US', {
+    timeZone: CT,
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).replace(' ', '');
+}
 
 
 export default async function DashboardPage() {
@@ -65,7 +78,7 @@ export default async function DashboardPage() {
                       <span />
                     )}
                     <span className="text-xs text-white/70">
-                      {format(new Date(trail.updated_at), 'M/d h:mma')}
+                      {formatCT(new Date(trail.updated_at))}
                     </span>
                   </div>
                 </li>
