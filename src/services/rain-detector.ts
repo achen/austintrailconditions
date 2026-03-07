@@ -78,47 +78,52 @@ function mapRowToRainEvent(row: Record<string, unknown>): RainEvent {
 export async function evaluate(observations: WeatherObservation[]): Promise<RainEvent[]> {
   const affectedEvents: RainEvent[] = [];
 
-  // Filter to observations with precipitation
-  const rainyObs = observations.filter((obs) => obs.precipitationIn > 0);
+  // Filter to observations with precipitation that are tagged with a trail
+  const rainyObs = observations.filter((obs) => obs.precipitationIn > 0 && obs.trailId);
   if (rainyObs.length === 0) return affectedEvents;
 
+  // Deduplicate: only process one observation per trail+timestamp to prevent
+  // double-counting when the same station feeds multiple trails
+  const seen = new Set<string>();
+
   for (const obs of rainyObs) {
-    const trails = await getTrailsByStation(obs.stationId);
+    const trailId = obs.trailId!;
+    const dedupeKey = `${trailId}:${obs.timestamp.toISOString()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
 
-    for (const trail of trails) {
-      const existing = await getActiveRainEvent(trail.id);
+    const existing = await getActiveRainEvent(trailId);
 
-      if (existing) {
-        // Extend the active rain event — add precipitation
-        const result = await sql`
-          UPDATE rain_events
-          SET total_precipitation_in = total_precipitation_in + ${obs.precipitationIn}
-          WHERE id = ${existing.id}
-          RETURNING id, trail_id, start_timestamp, end_timestamp,
-                    total_precipitation_in, is_active
-        `;
-        affectedEvents.push(mapRowToRainEvent(result.rows[0]));
-      } else {
-        // Create a new rain event
-        const result = await sql`
-          INSERT INTO rain_events (trail_id, start_timestamp, total_precipitation_in, is_active)
-          VALUES (${trail.id}, ${obs.timestamp.toISOString()}, ${obs.precipitationIn}, true)
-          RETURNING id, trail_id, start_timestamp, end_timestamp,
-                    total_precipitation_in, is_active
-        `;
-        affectedEvents.push(mapRowToRainEvent(result.rows[0]));
-      }
+    if (existing) {
+      // Extend the active rain event — add precipitation
+      const result = await sql`
+        UPDATE rain_events
+        SET total_precipitation_in = total_precipitation_in + ${obs.precipitationIn}
+        WHERE id = ${existing.id}
+        RETURNING id, trail_id, start_timestamp, end_timestamp,
+                  total_precipitation_in, is_active
+      `;
+      affectedEvents.push(mapRowToRainEvent(result.rows[0]));
+    } else {
+      // Create a new rain event
+      const result = await sql`
+        INSERT INTO rain_events (trail_id, start_timestamp, total_precipitation_in, is_active)
+        VALUES (${trailId}, ${obs.timestamp.toISOString()}, ${obs.precipitationIn}, true)
+        RETURNING id, trail_id, start_timestamp, end_timestamp,
+                  total_precipitation_in, is_active
+      `;
+      affectedEvents.push(mapRowToRainEvent(result.rows[0]));
+    }
 
-      // Only flip trail status once the rain event total reaches the threshold
-      const event = affectedEvents[affectedEvents.length - 1];
-      if (event.totalPrecipitationIn >= MIN_RAIN_THRESHOLD_IN) {
-        await sql`
-          UPDATE trails
-          SET condition_status = 'Predicted Wet',
-              updated_at = now()
-          WHERE id = ${trail.id}
-        `;
-      }
+    // Only flip trail status once the rain event total reaches the threshold
+    const event = affectedEvents[affectedEvents.length - 1];
+    if (event.totalPrecipitationIn >= MIN_RAIN_THRESHOLD_IN) {
+      await sql`
+        UPDATE trails
+        SET condition_status = 'Predicted Wet',
+            updated_at = now()
+        WHERE id = ${trailId}
+      `;
     }
   }
 
