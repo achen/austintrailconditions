@@ -82,30 +82,51 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
   const rainyObs = observations.filter((obs) => obs.precipitationIn > 0 && obs.trailId);
   if (rainyObs.length === 0) return affectedEvents;
 
-  // Deduplicate: only process one observation per trail+timestamp to prevent
-  // double-counting when the same station feeds multiple trails
-  const seen = new Set<string>();
-
+  // Deduplicate: only process one observation per trail (use the highest precip value)
+  const bestByTrail = new Map<string, WeatherObservation>();
   for (const obs of rainyObs) {
     const trailId = obs.trailId!;
-    const dedupeKey = `${trailId}:${obs.timestamp.toISOString()}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
+    const existing = bestByTrail.get(trailId);
+    if (!existing || obs.precipitationIn > existing.precipitationIn) {
+      bestByTrail.set(trailId, obs);
+    }
+  }
 
+  for (const [trailId, obs] of Array.from(bestByTrail.entries())) {
     const existing = await getActiveRainEvent(trailId);
 
     if (existing) {
-      // Extend the active rain event — add precipitation
+      // The observation's precipitationIn is the cumulative daily total from the API.
+      // The rain event may span multiple days, so the total is the sum of daily maxes.
+      // For the current day, just set the total to whatever is higher:
+      // the existing total or the new cumulative value.
+      // (On a new day the API resets to 0 and climbs again, so we add that day's max.)
+      //
+      // Simple approach: query the max cumulative precip per day from observations
+      // since the rain event started, then sum those daily maxes.
+      const totalResult = await sql`
+        SELECT COALESCE(SUM(daily_max), 0) AS total
+        FROM (
+          SELECT MAX(precipitation_in) AS daily_max
+          FROM weather_observations
+          WHERE trail_id = ${trailId}
+            AND station_id = ${obs.stationId}
+            AND timestamp >= ${existing.startTimestamp.toISOString()}
+          GROUP BY DATE(timestamp AT TIME ZONE 'America/Chicago')
+        ) daily
+      `;
+      const newTotal = Number(totalResult.rows[0].total);
+
       const result = await sql`
         UPDATE rain_events
-        SET total_precipitation_in = total_precipitation_in + ${obs.precipitationIn}
+        SET total_precipitation_in = ${newTotal}
         WHERE id = ${existing.id}
         RETURNING id, trail_id, start_timestamp, end_timestamp,
                   total_precipitation_in, is_active
       `;
       affectedEvents.push(mapRowToRainEvent(result.rows[0]));
     } else {
-      // Create a new rain event
+      // Create a new rain event — the cumulative value is today's total so far
       const result = await sql`
         INSERT INTO rain_events (trail_id, start_timestamp, total_precipitation_in, is_active)
         VALUES (${trailId}, ${obs.timestamp.toISOString()}, ${obs.precipitationIn}, true)

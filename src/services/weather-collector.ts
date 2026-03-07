@@ -116,25 +116,10 @@ export async function storeObservations(
   let insertedCount = 0;
 
   for (const obs of observations) {
-    // Look up the previous observation for this station+trail to compute delta
-    const prevResult = await sql`
-      SELECT precipitation_in FROM weather_observations
-      WHERE station_id = ${obs.stationId}
-        AND trail_id = ${obs.trailId ?? null}
-      ORDER BY timestamp DESC
-      LIMIT 1
-    `;
-
-    let incrementalPrecip = obs.precipitationIn;
-    if (prevResult.rows.length > 0) {
-      const prevPrecip = Number(prevResult.rows[0].precipitation_in);
-      if (obs.precipitationIn >= prevPrecip) {
-        // Same day — delta is the difference
-        incrementalPrecip = obs.precipitationIn - prevPrecip;
-      }
-      // If new < prev, daily reset occurred — new value IS the increment
-    }
-
+    // Store the raw cumulative daily precipitation from the API as-is.
+    // Do NOT compute deltas — the value is a running daily total that
+    // resets at midnight. Downstream consumers (rain detector) should
+    // use MAX(precipitation_in) for the day, not SUM.
     const result = await sql`
       INSERT INTO weather_observations (
         station_id, trail_id, timestamp, precipitation_in, temperature_f,
@@ -143,14 +128,20 @@ export async function storeObservations(
         ${obs.stationId},
         ${obs.trailId ?? null},
         ${obs.timestamp.toISOString()},
-        ${incrementalPrecip},
+        ${obs.precipitationIn},
         ${obs.temperatureF},
         ${obs.humidityPercent},
         ${obs.windSpeedMph},
         ${obs.solarRadiationWm2},
         ${obs.daylightHours}
       )
-      ON CONFLICT (station_id, trail_id, timestamp) DO NOTHING
+      ON CONFLICT (station_id, trail_id, timestamp) DO UPDATE SET
+        precipitation_in = EXCLUDED.precipitation_in,
+        temperature_f = EXCLUDED.temperature_f,
+        humidity_percent = EXCLUDED.humidity_percent,
+        wind_speed_mph = EXCLUDED.wind_speed_mph,
+        solar_radiation_wm2 = EXCLUDED.solar_radiation_wm2,
+        daylight_hours = EXCLUDED.daylight_hours
     `;
     if (result.rowCount && result.rowCount > 0) {
       insertedCount++;
