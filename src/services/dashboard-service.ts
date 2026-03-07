@@ -1,3 +1,4 @@
+import { unstable_noStore as noStore } from 'next/cache';
 import { sql } from '@/lib/db';
 import type { ConditionStatus } from '@/types';
 
@@ -14,6 +15,7 @@ export interface DashboardTrail {
  * for drying trails, the most recent predicted dry time.
  */
 export async function getTrailsWithConditions(): Promise<DashboardTrail[]> {
+  noStore();
   const { rows } = await sql`
     SELECT
       t.id,
