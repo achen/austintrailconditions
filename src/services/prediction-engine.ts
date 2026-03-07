@@ -225,7 +225,8 @@ export async function predict(
 export async function updatePredictions(openaiClient?: OpenAI): Promise<Prediction[]> {
   const updatedPredictions: Prediction[] = [];
 
-  // Get all drying trails
+  // Get all drying trails that don't have an active rain event
+  // (active rain means it's still raining — predictions should wait)
   const trailsResult = await sql`
     SELECT id, name, description, primary_station_id, drying_rate_in_per_day,
            max_drying_days, updates_enabled, is_archived, condition_status,
@@ -233,6 +234,10 @@ export async function updatePredictions(openaiClient?: OpenAI): Promise<Predicti
     FROM trails
     WHERE condition_status IN ('Predicted Wet', 'Predicted Dry')
       AND is_archived = false
+      AND NOT EXISTS (
+        SELECT 1 FROM rain_events
+        WHERE trail_id = trails.id AND is_active = true
+      )
   `;
 
   for (const row of trailsResult.rows) {

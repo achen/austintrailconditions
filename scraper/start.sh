@@ -1,6 +1,7 @@
 #!/bin/bash
-# Install the cron schedule for the Facebook scraper.
-# Runs every 2 hours from 6am–8pm Central Time.
+# Install cron schedules for scrapers.
+# Facebook scraper: every 2 hours from 6am–8pm Central Time.
+# Reimers scraper: every 30 minutes from 6am–8pm Central Time.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NODE_BIN="$(which node)"
@@ -10,20 +11,22 @@ if [ -z "$NODE_BIN" ]; then
   exit 1
 fi
 
-CRON_LINE="0 6,8,10,12,14,16,18,20 * * * /bin/bash -c 'cd $SCRIPT_DIR && xvfb-run -a --server-args=\"-screen 0 1440x900x24\" env HEADLESS=false $NODE_BIN scrape.js >> $SCRIPT_DIR/scrape.log 2>&1'"
+FB_CRON="0 6,8,10,12,14,16,18,20 * * * /bin/bash -c 'cd $SCRIPT_DIR && xvfb-run -a --server-args=\"-screen 0 1440x900x24\" env HEADLESS=false $NODE_BIN scrape.js >> $SCRIPT_DIR/scrape.log 2>&1'"
+REIMERS_CRON="*/30 6-20 * * * /bin/bash -c 'cd $SCRIPT_DIR && $NODE_BIN scrape-reimers.js >> $SCRIPT_DIR/scrape-reimers.log 2>&1'"
 
-# Check if already installed
-if crontab -l 2>/dev/null | grep -qF "scrape.js"; then
-  echo "Scraper cron is already installed. Updating..."
-  crontab -l 2>/dev/null | grep -vF "scrape.js" | { cat; echo "$CRON_LINE"; } | crontab -
-else
-  (crontab -l 2>/dev/null; echo "$CRON_LINE") | crontab -
-fi
+# Remove old entries and install fresh
+crontab -l 2>/dev/null | grep -vF "scrape.js" | grep -vF "scrape-reimers.js" | { cat; echo "$FB_CRON"; echo "$REIMERS_CRON"; } | crontab -
 
-echo "Cron installed:"
-echo "  $CRON_LINE"
+echo "Crons installed:"
 echo ""
-echo "Scraper will run every 2h from 6am–8pm."
-echo "Logs: $SCRIPT_DIR/scrape.log"
+echo "  Facebook (every 2h, 6am–8pm):"
+echo "  $FB_CRON"
+echo ""
+echo "  Reimers (every 30min, 6am–8pm):"
+echo "  $REIMERS_CRON"
+echo ""
+echo "Logs:"
+echo "  $SCRIPT_DIR/scrape.log"
+echo "  $SCRIPT_DIR/scrape-reimers.log"
 echo ""
 echo "To verify: crontab -l"

@@ -49,8 +49,8 @@ export async function scrapeTrailStatus(trail: ScrapableTrail): Promise<ScrapeRe
     const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
     // Look for patterns like "mountain bike trails...are open" or "...are closed"
-    const openPattern = /mountain bike trails[^.]*are\s+open/i;
-    const closedPattern = /mountain bike trails[^.]*are\s+closed/i;
+    const openPattern = /mountain bike trails[^.]*are\s+(?:currently\s+)?open/i;
+    const closedPattern = /mountain bike trails[^.]*are\s+(?:currently\s+)?closed/i;
 
     if (openPattern.test(text)) {
       const match = text.match(openPattern);

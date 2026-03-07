@@ -3,6 +3,8 @@ import { formatDistanceToNow } from 'date-fns';
 import { getTrailsWithConditions, getPredictionAccuracy } from '@/services/dashboard-service';
 import FeedbackButton from './feedback-button';
 
+export const dynamic = 'force-dynamic';
+
 const CT = 'America/Chicago';
 
 function formatCT(date: Date): string {
