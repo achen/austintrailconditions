@@ -48,6 +48,23 @@ export async function storeDryingConditions(
 
   const w = weatherResult.rows[0] || {};
 
+  // Count hours of meaningful solar radiation (> 50 W/m²) during daytime
+  // (8am–6pm CT). Each observation represents ~5 min, so we count distinct
+  // observation timestamps and convert to hours.
+  const solarResult = await sql`
+    SELECT COUNT(*) as solar_obs_count
+    FROM weather_observations
+    WHERE trail_id = ${trailId}
+      AND timestamp >= ${rainEnd.toISOString()}
+      AND timestamp <= ${actualDryTime.toISOString()}
+      AND solar_radiation_wm2 > 50
+      AND EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/Chicago') >= 8
+      AND EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/Chicago') < 18
+  `;
+  // Weather observations come every ~5 minutes, so each obs ≈ 5 min of sun
+  const solarObsCount = Number(solarResult.rows[0]?.solar_obs_count ?? 0);
+  const totalSolarHours = Math.round((solarObsCount * 5 / 60) * 10) / 10;
+
   // Antecedent moisture: precipitation in the 7 days before this rain event
   const antecedentResult = await sql`
     SELECT COALESCE(SUM(total_precipitation_in), 0) as precip_7d
@@ -81,7 +98,7 @@ export async function storeDryingConditions(
       avg_humidity_percent, min_humidity_percent,
       avg_wind_speed_mph, max_wind_speed_mph,
       avg_solar_radiation_wm2, max_solar_radiation_wm2,
-      total_daylight_hours,
+      total_daylight_hours, total_solar_hours,
       precip_7d_before_in, days_since_last_rain,
       actual_drying_hours
     ) VALUES (
@@ -91,7 +108,7 @@ export async function storeDryingConditions(
       ${w.avg_humidity ?? null}, ${w.min_humidity ?? null},
       ${w.avg_wind ?? null}, ${w.max_wind ?? null},
       ${w.avg_solar ?? null}, ${w.max_solar ?? null},
-      ${w.total_daylight ?? null},
+      ${w.total_daylight ?? null}, ${totalSolarHours},
       ${precip7d}, ${daysSinceLastRain},
       ${actualDryingHours}
     )
@@ -99,6 +116,6 @@ export async function storeDryingConditions(
   `;
 
   console.log(
-    `Stored drying conditions for trail ${trailId}: ${actualDryingHours.toFixed(1)}h to dry after ${totalPrecip}" rain`
+    `Stored drying conditions for trail ${trailId}: ${actualDryingHours.toFixed(1)}h to dry after ${totalPrecip}" rain, ${totalSolarHours}h sun`
   );
 }
