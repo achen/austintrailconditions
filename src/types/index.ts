@@ -92,6 +92,7 @@ export interface HistoricalOutcome {
 
 export interface PredictionInput {
   totalPrecipitationIn: number;
+  remainingMoistureIn?: number;
   dryingRateInPerDay: number;
   maxDryingDays: number;
   temperatureF: number;

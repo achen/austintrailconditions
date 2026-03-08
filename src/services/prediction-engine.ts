@@ -437,6 +437,7 @@ export async function updatePredictions(): Promise<Prediction[]> {
 
     const inputData: PredictionInput = {
       totalPrecipitationIn: totalRain,
+      remainingMoistureIn: remainingMoisture,
       dryingRateInPerDay: trail.dryingRateInPerDay,
       maxDryingDays: trail.maxDryingDays,
       temperatureF: avgTemp,

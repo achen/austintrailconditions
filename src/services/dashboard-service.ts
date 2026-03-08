@@ -28,7 +28,7 @@ export async function getTrailsWithConditions(): Promise<DashboardTrail[]> {
     FROM trails t
     LEFT JOIN LATERAL (
       SELECT predicted_dry_time,
-             (input_data->>'totalPrecipitationIn')::numeric AS remaining_moisture_in
+             COALESCE((input_data->>'remainingMoistureIn')::numeric, (input_data->>'totalPrecipitationIn')::numeric) AS remaining_moisture_in
       FROM predictions
       WHERE trail_id = t.id
       ORDER BY created_at DESC
