@@ -9,6 +9,7 @@ export const metadata: Metadata = {
     description: 'Real-time mountain bike trail conditions for Central Texas.',
     siteName: 'Austin Trail Conditions',
     type: 'website',
+    images: [{ url: '/opengraph-image', width: 600, height: 1200 }],
   },
 };
 
