@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og';
 import { sql } from '@/lib/db';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 export const revalidate = 300;
 export const contentType = 'image/png';
 export const size = { width: 600, height: 1200 };
@@ -76,7 +76,7 @@ export default async function OGImage() {
                 </span>
                 <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '14px' }}>
                   {trail.status}
-                  {isDrying && trail.moisture != null ? ` · ${trail.moisture.toFixed(2)}″ left` : ''}
+                  {isDrying && trail.moisture != null ? ` · ${trail.moisture.toFixed(2)} in left` : ''}
                 </span>
               </div>
             );
