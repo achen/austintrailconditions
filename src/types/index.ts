@@ -7,6 +7,7 @@ export type ConditionStatus =
   | 'Predicted Dry'
   | 'Predicted Wet'
   | 'Observed Wet'
+  | 'Open'
   | 'Closed';
 
 // --- Classification ---

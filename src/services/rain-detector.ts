@@ -152,7 +152,7 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
         SET condition_status = 'Predicted Wet',
             updated_at = now()
         WHERE id = ${trailId}
-          AND condition_status != 'Closed'
+          AND condition_status NOT IN ('Closed', 'Open')
       `;
     }
   }

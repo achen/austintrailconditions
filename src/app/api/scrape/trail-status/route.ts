@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid body: need trailName (string) and isOpen (boolean)' }, { status: 400 });
     }
 
-    const newStatus = isOpen ? 'Predicted Dry' : 'Closed';
+    const newStatus = isOpen ? 'Open' : 'Closed';
 
     const { rowCount } = await sql`
       UPDATE trails

@@ -51,7 +51,7 @@ export default async function DashboardPage() {
         ) : (
           <ul className="divide-y divide-gray-100 bg-white rounded-lg shadow-sm border border-gray-100">
             {trails.map((trail) => {
-              const isRideable = trail.condition_status === 'Observed Dry' || trail.condition_status === 'Predicted Dry';
+              const isRideable = trail.condition_status === 'Observed Dry' || trail.condition_status === 'Predicted Dry' || trail.condition_status === 'Open';
               const rowBg = isRideable ? 'bg-green-600 text-white' : 'bg-red-600 text-white';
               const isDrying = trail.condition_status === 'Predicted Wet';
               const statusLabels: Record<string, string> = {
@@ -59,6 +59,7 @@ export default async function DashboardPage() {
                 'Observed Wet': 'Observed Wet',
                 'Predicted Dry': 'Predicted Dry',
                 'Predicted Wet': 'Predicted Wet',
+                'Open': 'Open',
                 'Closed': 'Closed',
               };
               const statusLabel = statusLabels[trail.condition_status] ?? trail.condition_status;
