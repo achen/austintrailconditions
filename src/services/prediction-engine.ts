@@ -46,6 +46,7 @@ export async function updatePredictions(): Promise<Prediction[]> {
       AND NOT EXISTS (
         SELECT 1 FROM rain_events
         WHERE trail_id = trails.id AND is_active = true
+          AND total_precipitation_in >= 0.1
       )
   `;
 
