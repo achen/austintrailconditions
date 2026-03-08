@@ -19,6 +19,84 @@ function mapRowToPrediction(row: Record<string, unknown>): Prediction {
   };
 }
 
+/** Drying window: 8am–6pm Central Time (10 hours of effective drying per day). */
+const DRYING_START_HOUR = 8;  // 8am CT
+const DRYING_END_HOUR = 18;   // 6pm CT
+const DRYING_HOURS_PER_DAY = DRYING_END_HOUR - DRYING_START_HOUR; // 10
+
+/**
+ * Calculate when a trail will be dry based on daytime-only drying.
+ *
+ * Rules:
+ * - Drying only happens 8am–6pm CT (10 hours/day)
+ * - Drying starts the first morning (8am CT) after rain ends
+ * - Overnight hours don't count at all
+ * - dryingRate is inches dried per full drying day (10 hours)
+ */
+function calculateDryTime(
+  rainEnd: Date,
+  effectiveRain: number,
+  dryingRatePerDay: number,
+): Date {
+  const DRYING_HOURS = DRYING_END_HOUR - DRYING_START_HOUR; // 10
+
+  // How many drying days needed (each day = dryingRate inches dried)
+  const fullDaysNeeded = effectiveRain / dryingRatePerDay;
+  const wholeDays = Math.floor(fullDaysNeeded);
+  const fractionalDay = fullDaysNeeded - wholeDays;
+  const fractionalHours = Math.round(fractionalDay * DRYING_HOURS);
+
+  // Find "tomorrow 8am CT" in UTC
+  // Step 1: get the CT date of rain end
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(rainEnd);
+
+  const p: Record<string, string> = {};
+  for (const { type, value } of parts) p[type] = value;
+
+  // Next day at 8am CT as an ISO string
+  const rainEndDateCT = new Date(
+    Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second)
+  );
+  const nextDay = new Date(rainEndDateCT);
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  const ny = nextDay.getUTCFullYear();
+  const nm = nextDay.getUTCMonth() + 1;
+  const nd = nextDay.getUTCDate();
+
+  // Build "YYYY-MM-DDT08:00:00" in CT, then find the UTC offset for that moment
+  // CT is either UTC-6 (CST) or UTC-5 (CDT)
+  const target8amCT = `${ny}-${String(nm).padStart(2, '0')}-${String(nd).padStart(2, '0')}T${String(DRYING_START_HOUR).padStart(2, '0')}:00:00`;
+
+  // Use Intl to find the actual UTC offset at that CT time
+  // Create a UTC date and check what CT hour it maps to, then adjust
+  const guess = new Date(target8amCT + 'Z'); // pretend it's UTC
+  const guessParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    hour: 'numeric', hour12: false,
+  }).formatToParts(guess);
+  const guessHourCT = +(guessParts.find(x => x.type === 'hour')?.value ?? '0');
+  const offsetHours = guessHourCT - DRYING_START_HOUR;
+
+  // Adjust: if CT shows a different hour, shift to compensate
+  const dryingStartUtc = new Date(guess.getTime() - offsetHours * 60 * 60 * 1000);
+
+  // Add whole drying days + fractional hours
+  const dryTimeUtc = new Date(
+    dryingStartUtc.getTime()
+    + wholeDays * 24 * 60 * 60 * 1000
+    + fractionalHours * 60 * 60 * 1000
+  );
+
+  return dryTimeUtc;
+}
+
+
+
 /**
  * Update predictions for all trails with status "Predicted Wet" or "Predicted Dry".
  *
@@ -97,10 +175,14 @@ export async function updatePredictions(): Promise<Prediction[]> {
     const maxAbsorbable = trail.maxDryingDays * dryingRate;
     const effectiveRain = Math.min(rainEvent.totalPrecipitationIn, maxAbsorbable);
 
-    // Days to dry = effective rain / drying rate per day
-    const daysToDry = effectiveRain / dryingRate;
-    const dryTimeMs = daysToDry * 24 * 60 * 60 * 1000;
-    const predictedDryTime = new Date(rainEvent.endTimestamp.getTime() + dryTimeMs);
+    // Drying only happens during daylight hours (8am–6pm CT).
+    // Drying starts the first morning after rain ends.
+    // We step forward through daytime hours, deducting drying_rate per full day.
+    const predictedDryTime = calculateDryTime(
+      rainEvent.endTimestamp,
+      effectiveRain,
+      dryingRate,
+    );
 
     // Build input data for record keeping
     const inputData: PredictionInput = {
