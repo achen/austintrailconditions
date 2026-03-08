@@ -63,11 +63,15 @@ async function askAI(pageText) {
     day: 'numeric',
   });
 
-  const prompt = `Today is ${todayStr}.
+  const prompt = `Today is ${todayStr}. The current time in Central Time is approximately ${now.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true })}.
 
-The following text is from the Reveille Peak Ranch website. RPR is a mountain bike trail that never closes for weather, but does close for events (races, private events, etc).
+The following text is from the Reveille Peak Ranch (RPR) website. RPR is a mountain bike trail with these important rules:
+- RPR never closes for weather (they are an all-weather venue)
+- RPR's normal schedule: trails open Friday at 2pm through sunset Sunday. They are CLOSED Monday through Friday before 2pm unless otherwise noted.
+- They close for special events (races, private events, etc)
+- Camping is separate from trail access and may be open when trails are closed
 
-Based on the text below, are the trails OPEN or CLOSED today?
+Based on the text below, are the mountain bike TRAILS open or closed RIGHT NOW (today, at this time)?
 
 Respond with ONLY valid JSON: {"isOpen": true} or {"isOpen": false, "reason": "brief reason"}
 
