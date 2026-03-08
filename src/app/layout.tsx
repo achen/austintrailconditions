@@ -4,6 +4,12 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Austin Trail Conditions',
   description: 'Real-time mountain bike trail conditions for Central Texas trails. Check if trails are dry and rideable after rain.',
+  openGraph: {
+    title: 'Austin Trail Conditions',
+    description: 'Real-time mountain bike trail conditions for Central Texas.',
+    siteName: 'Austin Trail Conditions',
+    type: 'website',
+  },
 };
 
 export const viewport: Viewport = {
