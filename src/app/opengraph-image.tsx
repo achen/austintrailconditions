@@ -8,30 +8,42 @@ export const size = { width: 600, height: 1200 };
 
 export default async function OGImage() {
   const { rows } = await sql`
-    SELECT name, condition_status
-    FROM trails
-    WHERE is_archived = false AND updates_enabled = true
-    ORDER BY name ASC
+    SELECT
+      t.name,
+      t.condition_status,
+      COALESCE(
+        (p.input_data->>'remainingMoistureIn')::numeric,
+        (p.input_data->>'totalPrecipitationIn')::numeric
+      ) AS remaining_moisture_in
+    FROM trails t
+    LEFT JOIN LATERAL (
+      SELECT input_data
+      FROM predictions
+      WHERE trail_id = t.id
+      ORDER BY created_at DESC
+      LIMIT 1
+    ) p ON t.condition_status = 'Predicted Wet'
+    WHERE t.is_archived = false AND t.updates_enabled = true
+    ORDER BY t.name ASC
   `;
 
   const trails = rows.map(r => ({
     name: r.name as string,
     status: r.condition_status as string,
+    moisture: r.remaining_moisture_in != null ? Number(r.remaining_moisture_in) : null,
   }));
 
-  const green = ['Observed Dry', 'Predicted Dry', 'Open'];
+  const greenStatuses = ['Observed Dry', 'Predicted Dry', 'Open'];
 
   return new ImageResponse(
     (
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          width: '100%',
-          height: '100%',
-          backgroundColor: '#f9fafb',
-        }}
-      >
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: '100%',
+        height: '100%',
+        backgroundColor: '#f9fafb',
+      }}>
         <div style={{
           display: 'flex',
           backgroundColor: '#ffffff',
@@ -44,8 +56,9 @@ export default async function OGImage() {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           {trails.map((trail) => {
-            const isGreen = green.includes(trail.status);
+            const isGreen = greenStatuses.includes(trail.status);
             const bg = isGreen ? '#16a34a' : '#dc2626';
+            const isDrying = trail.status === 'Predicted Wet';
             return (
               <div
                 key={trail.name}
@@ -63,6 +76,7 @@ export default async function OGImage() {
                 </span>
                 <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '14px' }}>
                   {trail.status}
+                  {isDrying && trail.moisture != null ? ` · ${trail.moisture.toFixed(2)}″ left` : ''}
                 </span>
               </div>
             );
