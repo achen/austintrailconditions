@@ -5,6 +5,13 @@ import { sql } from '@/lib/db';
 const MIN_RAIN_THRESHOLD_IN = 0.1;
 
 /**
+ * Minimum cumulative daily precip (inches) to count as "still raining" in a
+ * single observation. WU stations often report a residual 0.01" for hours
+ * after rain stops — this filters that sensor noise.
+ */
+const MIN_OBS_PRECIP_IN = 0.02;
+
+/**
  * RainDetector — Detects and manages rain events from weather observations.
  *
  * Requirements: 3.1, 3.2, 3.3, 3.4
@@ -78,8 +85,8 @@ function mapRowToRainEvent(row: Record<string, unknown>): RainEvent {
 export async function evaluate(observations: WeatherObservation[]): Promise<RainEvent[]> {
   const affectedEvents: RainEvent[] = [];
 
-  // Filter to observations with precipitation that are tagged with a trail
-  const rainyObs = observations.filter((obs) => obs.precipitationIn > 0 && obs.trailId);
+  // Filter to observations with meaningful precipitation that are tagged with a trail
+  const rainyObs = observations.filter((obs) => obs.precipitationIn >= MIN_OBS_PRECIP_IN && obs.trailId);
   if (rainyObs.length === 0) return affectedEvents;
 
   // Deduplicate: only process one observation per trail (use the highest precip value)
@@ -197,11 +204,12 @@ export async function checkForRainEnd(): Promise<RainEvent[]> {
 
     const latestObsTime = new Date(latestObsResult.rows[0].timestamp as string);
 
-    // Get the most recent observation with precipitation > 0 for this station
+    // Get the most recent observation with meaningful precipitation for this station
+    // (ignore residual ≤ 0.02" — WU sensor noise after rain stops)
     const lastRainResult = await sql`
       SELECT timestamp FROM weather_observations
       WHERE station_id = ${stationId}
-        AND precipitation_in > 0
+        AND precipitation_in >= ${MIN_OBS_PRECIP_IN}
       ORDER BY timestamp DESC
       LIMIT 1
     `;
