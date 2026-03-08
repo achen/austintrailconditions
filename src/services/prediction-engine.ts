@@ -324,8 +324,10 @@ export async function updatePredictions(): Promise<Prediction[]> {
     `;
     const totalRain = Number(compoundResult.rows[0].compound_precip);
 
-    // Cap at max absorbable
-    const maxAbsorbable = trail.maxDryingDays * BASE_EVAP_IN_PER_HR * 10; // 10 hrs/day ideal
+    // Cap at max absorbable — drying_rate_in_per_day is repurposed as
+    // max absorbable inches (soil capacity). Rocky trails absorb less,
+    // dirt trails absorb more. Extra rain beyond this just runs off.
+    const maxAbsorbable = trail.dryingRateInPerDay > 0 ? trail.dryingRateInPerDay : 2;
     const effectiveRain = Math.min(totalRain, maxAbsorbable);
 
     // Compute actual drying that has occurred based on real weather
