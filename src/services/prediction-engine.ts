@@ -147,48 +147,28 @@ async function computeActualDrying(
  *
  * Returns estimated hours until dry (daytime hours only, 8am-6pm CT).
  */
+/**
+ * Estimate remaining drying time for the remaining moisture.
+ *
+ * Uses a "typical good drying day" rate rather than projecting current
+ * conditions forward — otherwise an overcast morning would predict weeks
+ * of drying. The actual drying already computed from real observations
+ * handles the accuracy; this just estimates the future portion.
+ *
+ * Typical Austin drying day: partly cloudy (solar ~400), light breeze (5mph), 75°F
+ * → ~0.017 in/hr → ~0.17 in per 10-hour drying day
+ */
 async function estimateRemainingHours(
-  trailId: string,
-  stationId: string,
   remainingIn: number,
 ): Promise<{ hours: number; ratePerHour: number }> {
-  // Get the most recent 6 daytime observations for trend
-  const recent = await sql`
-    SELECT solar_radiation_wm2, wind_speed_mph, temperature_f
-    FROM weather_observations
-    WHERE trail_id = ${trailId}
-      AND station_id = ${stationId}
-      AND EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/Chicago') >= 8
-      AND EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/Chicago') < 18
-    ORDER BY timestamp DESC
-    LIMIT 6
-  `;
+  // Typical good drying conditions for Austin
+  const typicalRate = dryingPerHour({
+    solarRadiationWm2: 400,
+    windSpeedMph: 5,
+    temperatureF: 75,
+  });
 
-  let ratePerHour: number;
-
-  if (recent.rows.length > 0) {
-    // Average the recent conditions
-    let totalRate = 0;
-    for (const o of recent.rows) {
-      totalRate += dryingPerHour({
-        solarRadiationWm2: Number(o.solar_radiation_wm2),
-        windSpeedMph: Number(o.wind_speed_mph),
-        temperatureF: Number(o.temperature_f),
-      });
-    }
-    ratePerHour = totalRate / recent.rows.length;
-  } else {
-    // Conservative default: overcast, calm, cool
-    ratePerHour = dryingPerHour({
-      solarRadiationWm2: 100,
-      windSpeedMph: 2,
-      temperatureF: 55,
-    });
-  }
-
-  // Minimum rate to avoid infinite predictions
-  ratePerHour = Math.max(ratePerHour, 0.001);
-
+  const ratePerHour = Math.max(typicalRate, 0.001);
   const hours = remainingIn / ratePerHour;
   return { hours, ratePerHour };
 }
@@ -365,8 +345,6 @@ export async function updatePredictions(): Promise<Prediction[]> {
     } else {
       // Estimate when it will finish drying based on recent conditions
       const { hours } = await estimateRemainingHours(
-        trail.id,
-        trail.primaryStationId,
         remainingMoisture,
       );
       predictedDryTime = addDaytimeHours(new Date(), hours);
