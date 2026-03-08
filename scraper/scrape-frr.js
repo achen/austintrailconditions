@@ -2,8 +2,8 @@
 /**
  * Flat Rock Ranch Trail Status Scraper
  *
- * Scrapes flatrockranchtx.com for trail open/closed status using a headless browser.
- * The site is Squarespace and renders status via JS, so we need Puppeteer.
+ * Scrapes flatrockranchtx.com and sends the page text to OpenAI to determine
+ * if trails are open or closed. The site is Squarespace and renders via JS.
  */
 
 const puppeteer = require('puppeteer-core');
@@ -29,13 +29,13 @@ if (fs.existsSync(envPath)) {
 // ── Config ───────────────────────────────────────────────────────────
 const API_URL = (process.env.API_URL || 'https://austintrailconditions.com').replace(/\/$/, '');
 const API_SECRET = process.env.API_SECRET || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const HEADLESS = process.env.HEADLESS !== 'false';
 
 if (!API_SECRET) { console.error('Missing API_SECRET in .env'); process.exit(1); }
+if (!OPENAI_API_KEY) { console.error('Missing OPENAI_API_KEY in .env'); process.exit(1); }
 
 const FRR_URL = 'https://www.flatrockranchtx.com/';
-const CLOSED_PATTERN = /(?:trails?\s+(?:are|is)\s+)?closed/i;
-const OPEN_PATTERN = /(?:trails?\s+(?:are|is)\s+)?open/i;
 
 function log(msg) { console.log(`[${new Date().toISOString()}] ${msg}`); }
 
@@ -50,6 +50,59 @@ function findChrome() {
   try { return execSync('which google-chrome').toString().trim(); } catch {}
   try { return execSync('which chromium').toString().trim(); } catch {}
   return null;
+}
+
+async function askAI(pageText) {
+  const now = new Date();
+  const todayStr = now.toLocaleDateString('en-US', {
+    timeZone: 'America/Chicago',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  const prompt = `Today is ${todayStr}.
+
+The following text is from the Flat Rock Ranch website (flatrockranchtx.com). Flat Rock Ranch is a mountain bike trail park near Comfort, TX. They sometimes close trails due to wet weather or events.
+
+Based on the text below, are the mountain bike trails open or closed RIGHT NOW?
+
+If there is no clear indication of open/closed status on the page, respond with {"isOpen": null, "reason": "no status found"}.
+
+Otherwise respond with ONLY valid JSON: {"isOpen": true} or {"isOpen": false, "reason": "brief reason"}
+
+Website text:
+${pageText.slice(0, 3000)}`;
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.4',
+      messages: [
+        { role: 'system', content: 'You determine if a trail is open or closed based on website text. Respond only with JSON.' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0,
+      max_completion_tokens: 100,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(`OpenAI API error ${res.status}: ${err.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content ?? '';
+  log(`AI response: ${content}`);
+
+  const jsonStr = content.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+  return JSON.parse(jsonStr);
 }
 
 async function scrapeFRR() {
@@ -76,48 +129,18 @@ async function scrapeFRR() {
     await new Promise(r => setTimeout(r, 5000));
 
     const bodyText = await page.evaluate(() => document.body.innerText);
+    log(`Page text (first 300 chars): ${bodyText.slice(0, 300).replace(/\n/g, ' ')}`);
 
-    // Look for trail status — typically in an announcement bar or banner
-    // Search for lines containing open/closed near "trail" or "ranch" context
-    const lines = bodyText.split('\n').map(l => l.trim()).filter(Boolean);
-    let isOpen = null;
-    let rawText = '';
+    const aiResult = await askAI(bodyText);
 
-    for (const line of lines) {
-      const lower = line.toLowerCase();
-      // Skip generic nav/footer text, focus on status announcements
-      if (lower.length > 200) continue;
-      if (lower.includes('closed') && (lower.includes('trail') || lower.includes('ranch') || lower.includes('weather') || lower.includes('rain') || lower.includes('wet'))) {
-        isOpen = false;
-        rawText = line.slice(0, 200);
-        break;
-      }
-      if (lower.includes('open') && (lower.includes('trail') || lower.includes('ranch') || lower.includes('riding'))) {
-        isOpen = true;
-        rawText = line.slice(0, 200);
-        break;
-      }
-    }
-
-    // Fallback: broader pattern match on full body
-    if (isOpen === null) {
-      const closedMatch = bodyText.match(/trails?\s+(?:are|is)\s+closed/i);
-      const openMatch = bodyText.match(/trails?\s+(?:are|is)\s+open/i);
-      if (closedMatch) {
-        isOpen = false;
-        rawText = closedMatch[0];
-      } else if (openMatch) {
-        isOpen = true;
-        rawText = openMatch[0];
-      }
-    }
-
-    if (isOpen === null) {
-      log('No open/closed status found on page. Skipping update.');
-      log(`Page text preview: ${bodyText.slice(0, 500)}`);
+    if (aiResult.isOpen === null) {
+      log(`No status found on page: ${aiResult.reason || 'unknown'}`);
       await browser.close();
       process.exit(0);
     }
+
+    const isOpen = aiResult.isOpen;
+    const rawText = aiResult.reason || (isOpen ? 'AI: open' : 'AI: closed');
 
     log(`Flat Rock Ranch: ${isOpen ? 'OPEN' : 'CLOSED'} — "${rawText}"`);
 
