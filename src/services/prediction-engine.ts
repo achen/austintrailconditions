@@ -169,6 +169,9 @@ export async function updatePredictions(): Promise<Prediction[]> {
 
     if (!rainEvent.endTimestamp) continue;
 
+    // Skip sub-threshold rain events — not enough rain to affect trail condition
+    if (rainEvent.totalPrecipitationIn < 0.1) continue;
+
     // Simple drying rate model:
     // Cap the effective rain at max_drying_days * drying_rate_in_per_day
     const dryingRate = trail.dryingRateInPerDay > 0 ? trail.dryingRateInPerDay : 1;
