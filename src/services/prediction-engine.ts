@@ -5,6 +5,7 @@ import {
   Prediction,
   PredictionInput,
 } from '@/types';
+import type { ForecastDaypart } from '@/services/weather-collector';
 
 function mapRowToPrediction(row: Record<string, unknown>): Prediction {
   return {
@@ -148,29 +149,111 @@ async function computeActualDrying(
  * Returns estimated hours until dry (daytime hours only, 8am-6pm CT).
  */
 /**
- * Estimate remaining drying time for the remaining moisture.
+ * Estimate remaining drying time using stored forecast dayparts.
  *
- * Uses a "typical good drying day" rate rather than projecting current
- * conditions forward — otherwise an overcast morning would predict weeks
- * of drying. The actual drying already computed from real observations
- * handles the accuracy; this just estimates the future portion.
+ * Reads the most recent weather_forecasts row with dayparts, then steps
+ * through each daytime daypart (~10 drying hours each) computing drying
+ * per daypart using the forecast's solar/wind/temp values.
  *
- * Typical Austin drying day: partly cloudy (solar ~400), light breeze (5mph), 75°F
- * → ~0.017 in/hr → ~0.17 in per 10-hour drying day
+ * Falls back to "typical Austin" conditions if no forecast dayparts exist.
  */
 async function estimateRemainingHours(
   remainingIn: number,
 ): Promise<{ hours: number; ratePerHour: number }> {
-  // Typical good drying conditions for Austin
-  const typicalRate = dryingPerHour({
-    solarRadiationWm2: 400,
-    windSpeedMph: 5,
-    temperatureF: 75,
-  });
+  // Try to load forecast dayparts from DB
+  const forecastResult = await sql`
+    SELECT dayparts FROM weather_forecasts
+    WHERE dayparts IS NOT NULL
+    ORDER BY forecast_date DESC
+    LIMIT 1
+  `;
 
-  const ratePerHour = Math.max(typicalRate, 0.001);
-  const hours = remainingIn / ratePerHour;
-  return { hours, ratePerHour };
+  let dayparts: ForecastDaypart[] = [];
+  if (forecastResult.rows.length > 0 && forecastResult.rows[0].dayparts) {
+    const raw = forecastResult.rows[0].dayparts;
+    dayparts = (typeof raw === 'string' ? JSON.parse(raw) : raw) as ForecastDaypart[];
+  }
+
+  if (dayparts.length === 0) {
+    // Fallback: typical Austin conditions
+    const typicalRate = dryingPerHour({
+      solarRadiationWm2: 400,
+      windSpeedMph: 5,
+      temperatureF: 75,
+    });
+    const ratePerHour = Math.max(typicalRate, 0.001);
+    return { hours: remainingIn / ratePerHour, ratePerHour };
+  }
+
+  // Step through forecast dayparts, each represents ~10 daytime drying hours
+  const HOURS_PER_DAYPART = 10;
+  let moisture = remainingIn;
+  let totalHours = 0;
+
+  // Figure out which daypart we're currently in so we don't re-count past ones
+  const now = new Date();
+  const ctHour = Number(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      hour: 'numeric',
+      hour12: false,
+    }).formatToParts(now).find(p => p.type === 'hour')?.value ?? '12'
+  );
+
+  // Today is dayOffset 0. If it's past 6pm CT, start from tomorrow (dayOffset 1)
+  const startDayOffset = ctHour >= 18 ? 1 : 0;
+  // If we're mid-day, only partial hours remain today
+  const hoursLeftToday = ctHour >= 8 && ctHour < 18 ? 18 - ctHour : 0;
+
+  for (const dp of dayparts) {
+    if (dp.dayOffset < startDayOffset) continue;
+    if (moisture <= 0) break;
+
+    // Skip dayparts with high rain chance — no drying during rain
+    if (dp.precipChance >= 50) {
+      // Rain daypart: count the hours but no drying
+      const hrs = dp.dayOffset === startDayOffset && hoursLeftToday > 0
+        ? hoursLeftToday : HOURS_PER_DAYPART;
+      totalHours += hrs;
+      continue;
+    }
+
+    const rate = dryingPerHour({
+      solarRadiationWm2: dp.solarRadiationWm2,
+      windSpeedMph: dp.windSpeedMph,
+      temperatureF: dp.temperatureF,
+    });
+
+    const hrs = dp.dayOffset === startDayOffset && hoursLeftToday > 0
+      ? hoursLeftToday : HOURS_PER_DAYPART;
+    const dried = rate * hrs;
+
+    if (dried >= moisture) {
+      // Finishes during this daypart
+      totalHours += moisture / Math.max(rate, 0.001);
+      moisture = 0;
+    } else {
+      totalHours += hrs;
+      moisture -= dried;
+    }
+  }
+
+  // If forecast dayparts ran out but moisture remains, use last daypart's rate
+  // (or typical conditions) for the remainder
+  if (moisture > 0) {
+    const lastDp = dayparts[dayparts.length - 1];
+    const fallbackRate = lastDp
+      ? dryingPerHour({
+          solarRadiationWm2: lastDp.solarRadiationWm2,
+          windSpeedMph: lastDp.windSpeedMph,
+          temperatureF: lastDp.temperatureF,
+        })
+      : dryingPerHour({ solarRadiationWm2: 400, windSpeedMph: 5, temperatureF: 75 });
+    totalHours += moisture / Math.max(fallbackRate, 0.001);
+  }
+
+  const avgRate = totalHours > 0 ? remainingIn / totalHours : 0.001;
+  return { hours: totalHours, ratePerHour: avgRate };
 }
 
 /**

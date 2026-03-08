@@ -94,8 +94,8 @@ export async function GET(request: Request) {
       console.log(`Forecast check: ${forecast.details}`);
 
       await sql`
-        INSERT INTO weather_forecasts (forecast_date, rain_expected, max_chance, details, poll_after_utc, poll_until_utc)
-        VALUES (${todayStr}, ${rainExpected}, ${forecast.maxChance}, ${forecast.details}, ${pollAfterUtc?.toISOString() ?? null}, ${pollUntilUtc?.toISOString() ?? null})
+        INSERT INTO weather_forecasts (forecast_date, rain_expected, max_chance, details, poll_after_utc, poll_until_utc, dayparts)
+        VALUES (${todayStr}, ${rainExpected}, ${forecast.maxChance}, ${forecast.details}, ${pollAfterUtc?.toISOString() ?? null}, ${pollUntilUtc?.toISOString() ?? null}, ${JSON.stringify(forecast.dayparts)})
         ON CONFLICT (forecast_date) DO NOTHING
       `;
 

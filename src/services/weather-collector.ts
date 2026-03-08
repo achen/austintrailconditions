@@ -232,10 +232,36 @@ export async function shouldPollFrequently(): Promise<boolean> {
  *
  * Total: 1 API call per day.
  */
+// ── Forecast-based drying ─────────────────────────────────────────────
+
+export interface ForecastDaypart {
+  dayOffset: number;
+  name: string;
+  solarRadiationWm2: number;
+  windSpeedMph: number;
+  temperatureF: number;
+  precipChance: number;
+  phrase: string;
+}
+
+/** Map WU weather phrase to approximate daytime solar radiation (W/m²). */
+function phraseSolarRadiation(phrase: string | null): number {
+  if (!phrase) return 300;
+  const p = phrase.toLowerCase();
+  if (p.includes('rain') || p.includes('thunder') || p.includes('shower') || p.includes('storm')) return 50;
+  if (p.includes('fog') || p.includes('haze') || p.includes('mist')) return 150;
+  if (p.includes('mostly cloudy')) return 200;
+  if (p.includes('partly cloudy') || p.includes('partly sunny')) return 400;
+  if (p.includes('cloudy') || p.includes('overcast')) return 100;
+  if (p.includes('mostly sunny') || p.includes('mostly clear')) return 650;
+  if (p.includes('sunny') || p.includes('clear')) return 800;
+  return 300;
+}
+
 export async function isRainForecast(
   apiKey: string,
   baseUrl: string = process.env.WEATHER_API_BASE_URL || 'https://api.weather.com'
-): Promise<{ rainExpected: boolean; maxChance: number; details: string; pollAfterUtc: Date | null; pollUntilUtc: Date | null }> {
+): Promise<{ rainExpected: boolean; maxChance: number; details: string; pollAfterUtc: Date | null; pollUntilUtc: Date | null; dayparts: ForecastDaypart[] }> {
   const dailyUrl = `${baseUrl}/v3/wx/forecast/daily/5day?geocode=30.27,-97.74&format=json&units=e&language=en-US&apiKey=${encodeURIComponent(apiKey)}`;
 
   try {
@@ -245,13 +271,13 @@ export async function isRainForecast(
     }
     if (!dailyResp.ok) {
       console.error(`Forecast API error: ${dailyResp.status}`);
-      return { rainExpected: true, maxChance: -1, details: `API error ${dailyResp.status}`, pollAfterUtc: new Date(), pollUntilUtc: null };
+      return { rainExpected: true, maxChance: -1, details: `API error ${dailyResp.status}`, pollAfterUtc: new Date(), pollUntilUtc: null, dayparts: [] };
     }
 
     const dailyData = await dailyResp.json();
     const dayParts = dailyData.daypart?.[0];
     if (!dayParts?.precipChance) {
-      return { rainExpected: true, maxChance: -1, details: 'No forecast data', pollAfterUtc: new Date(), pollUntilUtc: null };
+      return { rainExpected: true, maxChance: -1, details: 'No forecast data', pollAfterUtc: new Date(), pollUntilUtc: null, dayparts: [] };
     }
 
     // Find max precip chance across all dayparts
@@ -262,8 +288,25 @@ export async function isRainForecast(
       if (chance !== null && chance >= 30) hasRain = true;
     }
 
+    // Extract daypart conditions for drying predictions (daytime only)
+    const forecastDayparts: ForecastDaypart[] = [];
+    for (let i = 0; i < (dayParts.temperature?.length ?? 0); i++) {
+      const isNight = i % 2 === 1;
+      if (isNight) continue; // Only daytime dayparts matter for drying
+      if (dayParts.temperature[i] === null) continue;
+      forecastDayparts.push({
+        dayOffset: Math.floor(i / 2),
+        name: dayParts.daypartName?.[i] ?? `Day ${Math.floor(i / 2)}`,
+        solarRadiationWm2: phraseSolarRadiation(dayParts.wxPhraseLong?.[i] ?? null),
+        windSpeedMph: dayParts.windSpeed?.[i] ?? 5,
+        temperatureF: dayParts.temperature[i] ?? 75,
+        precipChance: dayParts.precipChance[i] ?? 0,
+        phrase: dayParts.wxPhraseLong?.[i] ?? 'Unknown',
+      });
+    }
+
     if (!hasRain) {
-      return { rainExpected: false, maxChance, details: `5-day max precip: ${maxChance}% — no rain expected`, pollAfterUtc: null, pollUntilUtc: null };
+      return { rainExpected: false, maxChance, details: `5-day max precip: ${maxChance}% — no rain expected`, pollAfterUtc: null, pollUntilUtc: null, dayparts: forecastDayparts };
     }
 
     // Find the first and last dayparts with ≥30% chance to build the polling window
@@ -320,11 +363,11 @@ export async function isRainForecast(
       details = `Rain ${maxChance}% — ${rainDetail}. Poll after ${pollAfterUtc?.toISOString() ?? 'now'}, until ${pollUntilUtc?.toISOString() ?? 'unknown'}`;
     }
 
-    return { rainExpected: true, maxChance, details, pollAfterUtc, pollUntilUtc };
+    return { rainExpected: true, maxChance, details, pollAfterUtc, pollUntilUtc, dayparts: forecastDayparts };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`Forecast check failed: ${msg}`);
-    return { rainExpected: true, maxChance: -1, details: `Error: ${msg}`, pollAfterUtc: new Date(), pollUntilUtc: null };
+    return { rainExpected: true, maxChance: -1, details: `Error: ${msg}`, pollAfterUtc: new Date(), pollUntilUtc: null, dayparts: [] };
   }
 }
 
