@@ -2,9 +2,9 @@ import { ImageResponse } from 'next/og';
 import { sql } from '@/lib/db';
 
 export const runtime = 'edge';
-export const revalidate = 300; // regenerate every 5 minutes
+export const revalidate = 300;
 export const contentType = 'image/png';
-export const size = { width: 1200, height: 630 };
+export const size = { width: 600, height: 1200 };
 
 export default async function OGImage() {
   const { rows } = await sql`
@@ -20,8 +20,6 @@ export default async function OGImage() {
   }));
 
   const green = ['Observed Dry', 'Predicted Dry', 'Open'];
-  const dryCount = trails.filter(t => green.includes(t.status)).length;
-  const wetCount = trails.length - dryCount;
 
   return new ImageResponse(
     (
@@ -31,55 +29,44 @@ export default async function OGImage() {
           flexDirection: 'column',
           width: '100%',
           height: '100%',
-          backgroundColor: '#111827',
-          padding: '40px',
-          fontFamily: 'sans-serif',
+          backgroundColor: '#f9fafb',
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-          <div style={{ fontSize: '42px', fontWeight: 'bold', color: '#ffffff' }}>
+        <div style={{
+          display: 'flex',
+          backgroundColor: '#ffffff',
+          padding: '16px 20px',
+          borderBottom: '1px solid #e5e7eb',
+        }}>
+          <span style={{ fontSize: '24px', fontWeight: 'bold', color: '#111827' }}>
             Austin Trail Conditions
-          </div>
-          <div style={{ display: 'flex', gap: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div style={{ width: '16px', height: '16px', borderRadius: '50%', backgroundColor: '#16a34a' }} />
-              <span style={{ color: '#9ca3af', fontSize: '20px' }}>{dryCount} rideable</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div style={{ width: '16px', height: '16px', borderRadius: '50%', backgroundColor: '#dc2626' }} />
-              <span style={{ color: '#9ca3af', fontSize: '20px' }}>{wetCount} wet</span>
-            </div>
-          </div>
+          </span>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', flex: 1 }}>
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
           {trails.map((trail) => {
             const isGreen = green.includes(trail.status);
+            const bg = isGreen ? '#16a34a' : '#dc2626';
             return (
               <div
                 key={trail.name}
                 style={{
                   display: 'flex',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
-                  gap: '6px',
-                  backgroundColor: isGreen ? '#16a34a' : '#dc2626',
-                  color: '#ffffff',
-                  padding: '6px 12px',
-                  borderRadius: '6px',
-                  fontSize: '16px',
-                  fontWeight: 500,
+                  backgroundColor: bg,
+                  padding: '10px 20px',
+                  borderBottom: '1px solid rgba(255,255,255,0.15)',
                 }}
               >
-                {trail.name}
+                <span style={{ color: '#ffffff', fontSize: '18px', fontWeight: 500 }}>
+                  {trail.name}
+                </span>
+                <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '14px' }}>
+                  {trail.status}
+                </span>
               </div>
             );
           })}
-        </div>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px' }}>
-          <span style={{ color: '#6b7280', fontSize: '16px' }}>austintrailconditions.com</span>
-          <span style={{ color: '#6b7280', fontSize: '16px' }}>
-            Updated {new Date().toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })}
-          </span>
         </div>
       </div>
     ),
