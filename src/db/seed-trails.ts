@@ -19,7 +19,7 @@ export const seedTrails: SeedTrail[] = [
   { name: 'Brushy - Suburban Ninja', primaryStationId: 'KTXCEDAR264', dryingRateInPerDay: 1.15, maxDryingDays: 4, updatesEnabled: true },
   { name: 'Brushy - West', primaryStationId: 'KTXCEDAR192', dryingRateInPerDay: 0.58, maxDryingDays: 2, updatesEnabled: true },
   { name: 'Bull Creek', primaryStationId: 'KTXAUSTI3116', dryingRateInPerDay: 0.86, maxDryingDays: 3, updatesEnabled: true },
-  { name: 'Cat Mountain', primaryStationId: 'KTXAUSTI2379', dryingRateInPerDay: 0.86, maxDryingDays: 3, updatesEnabled: true },
+  { name: 'Cat Mountain', primaryStationId: 'KTXAUSTI2379', dryingRateInPerDay: 0.58, maxDryingDays: 2, updatesEnabled: true },
   { name: 'Emma Long', primaryStationId: 'KTXAUSTI3019', dryingRateInPerDay: 0.86, maxDryingDays: 3, updatesEnabled: true },
   { name: 'Flat Creek', primaryStationId: '', dryingRateInPerDay: 0, maxDryingDays: 0, updatesEnabled: false },
   { name: 'Flat Rock Ranch', primaryStationId: 'KTXCOMFO23', dryingRateInPerDay: 0.86, maxDryingDays: 3, updatesEnabled: true },
