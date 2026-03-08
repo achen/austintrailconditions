@@ -137,6 +137,7 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
     }
 
     // Only flip trail status once the rain event total reaches the threshold
+    // Never override "Closed" — that's set by official scrapers and takes priority
     const event = affectedEvents[affectedEvents.length - 1];
     if (event.totalPrecipitationIn >= MIN_RAIN_THRESHOLD_IN) {
       await sql`
@@ -144,6 +145,7 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
         SET condition_status = 'Predicted Wet',
             updated_at = now()
         WHERE id = ${trailId}
+          AND condition_status != 'Closed'
       `;
     }
   }
