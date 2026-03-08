@@ -8,6 +8,7 @@ export interface DashboardTrail {
   condition_status: ConditionStatus;
   updated_at: string;
   predicted_dry_time: string | null;
+  remaining_moisture_in: number | null;
 }
 
 /**
@@ -22,10 +23,12 @@ export async function getTrailsWithConditions(): Promise<DashboardTrail[]> {
       t.name,
       t.condition_status,
       t.updated_at,
-      p.predicted_dry_time
+      p.predicted_dry_time,
+      p.remaining_moisture_in
     FROM trails t
     LEFT JOIN LATERAL (
-      SELECT predicted_dry_time
+      SELECT predicted_dry_time,
+             (input_data->>'totalPrecipitationIn')::numeric AS remaining_moisture_in
       FROM predictions
       WHERE trail_id = t.id
       ORDER BY created_at DESC

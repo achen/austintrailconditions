@@ -76,6 +76,7 @@ export default async function DashboardPage() {
                         dry {new Date(trail.predicted_dry_time) > new Date()
                           ? formatDistanceToNow(new Date(trail.predicted_dry_time), { addSuffix: true })
                           : 'soon'}
+                        {trail.remaining_moisture_in != null && ` · ${Number(trail.remaining_moisture_in).toFixed(2)}″`}
                       </span>
                     ) : (
                       <span />
