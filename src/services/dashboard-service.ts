@@ -46,8 +46,14 @@ export async function getTrailsWithConditions(): Promise<DashboardTrail[]> {
       SELECT COALESCE(SUM(re.total_precipitation_in), 0) AS active_rain_in
       FROM rain_events re
       WHERE re.trail_id = t.id
-        AND re.is_active = true
         AND re.total_precipitation_in >= 0.1
+        AND (re.is_active = true
+             OR re.end_timestamp >= now() - interval '48 hours')
+        AND re.start_timestamp > COALESCE(
+          (SELECT MAX(tv.created_at) FROM trail_verifications tv
+           WHERE tv.trail_id = t.id AND tv.classification = 'dry'),
+          '1970-01-01'::timestamptz
+        )
     ) rain ON true
     WHERE t.is_archived = false
     ORDER BY t.name ASC
