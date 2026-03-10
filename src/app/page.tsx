@@ -57,7 +57,9 @@ export default async function DashboardPage() {
                   </div>
                   <div className="flex items-center justify-between gap-2 mt-0.5">
                     {isDrying && trail.has_active_rain ? (
-                      <span className="text-xs text-white/70">raining</span>
+                      <span className="text-xs text-white/70">
+                        raining · {Number(trail.active_rain_in ?? 0).toFixed(2)}″ so far
+                      </span>
                     ) : isDrying && trail.predicted_dry_time ? (
                       <span className="text-xs text-white/70">
                         dry {new Date(trail.predicted_dry_time) > new Date()
