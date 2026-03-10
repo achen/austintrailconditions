@@ -56,7 +56,9 @@ export default async function DashboardPage() {
                     <span className="text-xs font-medium text-white/80 shrink-0">{statusLabel}</span>
                   </div>
                   <div className="flex items-center justify-between gap-2 mt-0.5">
-                    {isDrying && trail.predicted_dry_time ? (
+                    {isDrying && trail.has_active_rain ? (
+                      <span className="text-xs text-white/70">raining</span>
+                    ) : isDrying && trail.predicted_dry_time ? (
                       <span className="text-xs text-white/70">
                         dry {new Date(trail.predicted_dry_time) > new Date()
                           ? formatDistanceToNow(new Date(trail.predicted_dry_time), { addSuffix: true })

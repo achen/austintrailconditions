@@ -9,6 +9,7 @@ export interface DashboardTrail {
   updated_at: string;
   predicted_dry_time: string | null;
   remaining_moisture_in: number | null;
+  has_active_rain: boolean;
 }
 
 /**
@@ -24,7 +25,12 @@ export async function getTrailsWithConditions(): Promise<DashboardTrail[]> {
       t.condition_status,
       t.updated_at,
       p.predicted_dry_time,
-      p.remaining_moisture_in
+      p.remaining_moisture_in,
+      EXISTS (
+        SELECT 1 FROM rain_events
+        WHERE trail_id = t.id AND is_active = true
+          AND total_precipitation_in >= 0.1
+      ) AS has_active_rain
     FROM trails t
     LEFT JOIN LATERAL (
       SELECT predicted_dry_time,
