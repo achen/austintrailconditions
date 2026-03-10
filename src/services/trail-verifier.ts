@@ -133,6 +133,17 @@ export async function applyVerifiedStatuses(): Promise<VerificationResult[]> {
         WHERE id = ${trailId}
       `;
 
+      // If marked dry, close out all active rain events — the trail is confirmed dry
+      // so prior rain shouldn't compound into future predictions
+      if (classification === 'dry') {
+        await sql`
+          UPDATE rain_events
+          SET is_active = false,
+              end_timestamp = COALESCE(end_timestamp, ${postTimestamp.toISOString()})
+          WHERE trail_id = ${trailId} AND is_active = true
+        `;
+      }
+
       // Record the verification so we don't apply it again
       await sql`
         INSERT INTO trail_verifications (post_id, trail_id, classification, confidence_score, new_status)

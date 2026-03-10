@@ -86,7 +86,7 @@ export async function evaluate(observations: WeatherObservation[]): Promise<Rain
   const affectedEvents: RainEvent[] = [];
 
   // Filter to observations with meaningful precipitation that are tagged with a trail
-  const rainyObs = observations.filter((obs) => obs.precipitationIn >= MIN_OBS_PRECIP_IN && obs.trailId);
+  const rainyObs = observations.filter((obs) => obs.precipitationIn > MIN_OBS_PRECIP_IN && obs.trailId);
   if (rainyObs.length === 0) return affectedEvents;
 
   // Deduplicate: only process one observation per trail (use the highest precip value)

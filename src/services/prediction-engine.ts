@@ -394,15 +394,30 @@ export async function updatePredictions(): Promise<Prediction[]> {
 
     if (!rainEvent.endTimestamp) continue;
 
+    // Find the last time this trail was confirmed dry — don't compound rain from before that
+    const lastDryResult = await sql`
+      SELECT MAX(tv.created_at) as last_dry
+      FROM trail_verifications tv
+      WHERE tv.trail_id = ${trail.id} AND tv.classification = 'dry'
+    `;
+    const lastDryTime = lastDryResult.rows[0]?.last_dry
+      ? new Date(lastDryResult.rows[0].last_dry as string)
+      : null;
+
     // Sum precipitation from all rain events that ended within 48h before
     // this one started (consecutive/overlapping storms compound moisture)
+    // but only events AFTER the last confirmed dry report
+    const compoundCutoff = lastDryTime && lastDryTime > new Date(rainEvent.startTimestamp.getTime() - 48 * 60 * 60 * 1000)
+      ? lastDryTime
+      : new Date(rainEvent.startTimestamp.getTime() - 48 * 60 * 60 * 1000);
+
     const compoundResult = await sql`
       SELECT COALESCE(SUM(total_precipitation_in), 0) as compound_precip
       FROM rain_events
       WHERE trail_id = ${trail.id}
         AND is_active = false
         AND total_precipitation_in >= 0.1
-        AND end_timestamp >= ${new Date(rainEvent.startTimestamp.getTime() - 48 * 60 * 60 * 1000).toISOString()}
+        AND end_timestamp >= ${compoundCutoff.toISOString()}
         AND end_timestamp <= ${rainEvent.endTimestamp.toISOString()}
     `;
     const totalRain = Number(compoundResult.rows[0].compound_precip);
