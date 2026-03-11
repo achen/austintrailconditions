@@ -6,6 +6,7 @@ import type { SeedTrail } from '../types';
  * dryingRateInPerDay is repurposed as max absorbable inches (soil capacity).
  * Calculated as: max_drying_days × ideal_drying_rate_per_day
  * where ideal = 0.0288 in/hr × 10 hrs = 0.288 in/day (85°F, full sun, light wind).
+ * General rule of thumb: max absorbable ≈ 3 sunny warm days ≈ 0.86″.
  *
  * maxDryingDays is kept for stale report detection in trail-verifier.
  */

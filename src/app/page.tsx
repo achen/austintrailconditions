@@ -59,6 +59,9 @@ export default async function DashboardPage() {
                     {isDrying && trail.has_active_rain ? (
                       <span className="text-xs text-white/70">
                         raining · {Number(trail.active_rain_in ?? 0).toFixed(2)}″
+                        {Number(trail.total_rain_in ?? 0) > Number(trail.active_rain_in ?? 0) && (
+                          <> ({Number(trail.total_rain_in ?? 0).toFixed(2)}″ fell, {Number(trail.max_absorbable_in ?? 2)}″ max)</>
+                        )}
                       </span>
                     ) : isDrying && trail.predicted_dry_time ? (
                       <span className="text-xs text-white/70">

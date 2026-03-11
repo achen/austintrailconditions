@@ -11,6 +11,8 @@ export interface DashboardTrail {
   remaining_moisture_in: number | null;
   has_active_rain: boolean;
   active_rain_in: number | null;
+  total_rain_in: number | null;
+  max_absorbable_in: number;
 }
 
 /**
@@ -32,7 +34,9 @@ export async function getTrailsWithConditions(): Promise<DashboardTrail[]> {
         WHERE trail_id = t.id AND is_active = true
           AND total_precipitation_in >= 0.1
       ) AS has_active_rain,
-      rain.active_rain_in
+      LEAST(rain.raw_rain_in, CASE WHEN t.drying_rate_in_per_day > 0 THEN t.drying_rate_in_per_day ELSE 0.86 END) AS active_rain_in,
+      rain.raw_rain_in AS total_rain_in,
+      CASE WHEN t.drying_rate_in_per_day > 0 THEN t.drying_rate_in_per_day ELSE 0.86 END AS max_absorbable_in
     FROM trails t
     LEFT JOIN LATERAL (
       SELECT predicted_dry_time,
@@ -43,7 +47,7 @@ export async function getTrailsWithConditions(): Promise<DashboardTrail[]> {
       LIMIT 1
     ) p ON t.condition_status = 'Predicted Wet'
     LEFT JOIN LATERAL (
-      SELECT COALESCE(SUM(re.total_precipitation_in), 0) AS active_rain_in
+      SELECT COALESCE(SUM(re.total_precipitation_in), 0) AS raw_rain_in
       FROM rain_events re
       WHERE re.trail_id = t.id
         AND re.total_precipitation_in >= 0.1
