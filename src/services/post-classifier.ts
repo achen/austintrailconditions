@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { TrailReport, ClassificationResult, Classification } from '@/types';
 import { sql } from '@/lib/db';
+import { notifyUnmatchedTrailPost } from '@/services/notification-service';
 
 const VALID_CLASSIFICATIONS: Classification[] = ['dry', 'wet', 'inquiry', 'unrelated'];
 const CONFIDENCE_THRESHOLD = 0.6;
@@ -154,7 +155,7 @@ Known trails and their segments:
 ${trailInfo}
 
 Respond ONLY with valid JSON in this exact format:
-{"classification": "dry|wet|inquiry|unrelated", "confidenceScore": 0.0}`;
+{"classification": "dry|wet|inquiry|unrelated", "confidenceScore": 0.0, "trailReferences": ["Trail Name"]}`;
 }
 
 /**
@@ -164,6 +165,7 @@ Respond ONLY with valid JSON in this exact format:
 function parseClassificationResponse(content: string): {
   classification: Classification;
   confidenceScore: number;
+  trailReferences: string[];
 } {
   try {
     const parsed = JSON.parse(content);
@@ -179,15 +181,20 @@ function parseClassificationResponse(content: string): {
         ? parsed.confidenceScore
         : 0.5;
 
-    return { classification, confidenceScore };
+    const trailReferences = Array.isArray(parsed.trailReferences)
+      ? parsed.trailReferences.filter((t: unknown) => typeof t === 'string')
+      : [];
+
+    return { classification, confidenceScore, trailReferences };
   } catch {
-    return { classification: 'unrelated', confidenceScore: 0.0 };
+    return { classification: 'unrelated', confidenceScore: 0.0, trailReferences: [] };
   }
 }
 
 /**
  * Classify a trail report using OpenAI.
- * Sends the post text to OpenAI for classification and extracts trail names via fuzzy matching.
+ * Sends the post text to OpenAI for classification and trail matching.
+ * The AI determines which trail(s) are referenced from the known trail list.
  * Flags posts with confidence < 0.6 for manual review.
  */
 export async function classify(
@@ -211,22 +218,7 @@ export async function classify(
     }
   }
 
-  let trailReferences = extractTrailNames(report.postText, knownTrails, aliasMap);
-
-  // If this is a comment with no trail matches, inherit from the parent post
-  if (trailReferences.length === 0 && report.parentPostId) {
-    const parentResult = await sql`
-      SELECT trail_references FROM trail_reports
-      WHERE post_id = ${report.parentPostId}
-        AND trail_references IS NOT NULL
-        AND array_length(trail_references, 1) > 0
-      LIMIT 1
-    `;
-    if (parentResult.rows.length > 0) {
-      trailReferences = parentResult.rows[0].trail_references as string[];
-    }
-  }
-
+  let trailReferences: string[] = [];
   let classification: Classification;
   let confidenceScore: number;
 
@@ -245,14 +237,35 @@ export async function classify(
     const parsed = parseClassificationResponse(content);
     classification = parsed.classification;
     confidenceScore = parsed.confidenceScore;
+    // Only keep trail names the AI returned that are actually in our known list
+    trailReferences = parsed.trailReferences.filter(t => knownTrails.includes(t));
   } catch (error) {
     console.error('OpenAI classification error:', error);
-    // On API failure, mark as unrelated with zero confidence so it gets flagged
     classification = 'unrelated';
     confidenceScore = 0.0;
   }
 
+  // If this is a comment with no trail matches, inherit from the parent post
+  if (trailReferences.length === 0 && report.parentPostId) {
+    const parentResult = await sql`
+      SELECT trail_references FROM trail_reports
+      WHERE post_id = ${report.parentPostId}
+        AND trail_references IS NOT NULL
+        AND array_length(trail_references, 1) > 0
+      LIMIT 1
+    `;
+    if (parentResult.rows.length > 0) {
+      trailReferences = parentResult.rows[0].trail_references as string[];
+    }
+  }
+
   const flaggedForReview = confidenceScore < CONFIDENCE_THRESHOLD;
+
+  // Alert if a dry/wet post couldn't be matched to any trail
+  if (trailReferences.length === 0 && (classification === 'dry' || classification === 'wet')) {
+    notifyUnmatchedTrailPost(report.postText, classification, confidenceScore, report.postId)
+      .catch(err => console.error('Failed to send unmatched trail notification:', err));
+  }
 
   // Update the trail report in the database with classification results
   await sql`

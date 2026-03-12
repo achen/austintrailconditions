@@ -169,6 +169,25 @@ export async function notifyForecastCheck(
      ${trailTable}`
   );
 }
+/**
+ * Alert when a Facebook post was classified as dry/wet but the AI
+ * couldn't match it to a known trail. Needs manual review.
+ */
+export async function notifyUnmatchedTrailPost(
+  postText: string,
+  classification: string,
+  confidenceScore: number,
+  postId: string
+): Promise<boolean> {
+  return sendAlert(
+    `Unmatched trail post — "${classification}" with no trail`,
+    `<h3>Unmatched Trail Post</h3>
+     <p>A Facebook post was classified as <strong>${classification}</strong> (confidence: ${confidenceScore.toFixed(2)}) but no trail could be identified.</p>
+     <p><strong>Post text:</strong></p>
+     <blockquote style="background:#f5f5f5;padding:12px;border-radius:4px;border-left:4px solid #ccc">${postText}</blockquote>
+     <p style="color:#888;font-size:12px">Post ID: ${postId}. You may need to add a trail alias if this references a known trail by a nickname or segment name.</p>`
+  );
+}
 
 
 
