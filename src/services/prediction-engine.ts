@@ -101,15 +101,29 @@ async function computeActualDrying(
   avgTemp: number;
 }> {
   // Get hourly observations during daytime (8am-6pm CT) since rain ended
+  // If the trail's station lacks a solar sensor (reports 0), substitute
+  // the max solar reading from any other station at the same hour —
+  // solar radiation is effectively the same across the metro area.
   const obs = await sql`
-    SELECT solar_radiation_wm2, wind_speed_mph, temperature_f, timestamp
-    FROM weather_observations
-    WHERE trail_id = ${trailId}
-      AND station_id = ${stationId}
-      AND timestamp >= ${rainEnd.toISOString()}
-      AND EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/Chicago') >= 8
-      AND EXTRACT(HOUR FROM timestamp AT TIME ZONE 'America/Chicago') < 18
-    ORDER BY timestamp ASC
+    SELECT
+      o.timestamp,
+      o.wind_speed_mph,
+      o.temperature_f,
+      CASE WHEN o.solar_radiation_wm2 > 0 THEN o.solar_radiation_wm2
+           ELSE COALESCE((
+             SELECT MAX(o2.solar_radiation_wm2)
+             FROM weather_observations o2
+             WHERE o2.timestamp = o.timestamp
+               AND o2.solar_radiation_wm2 > 0
+           ), 0)
+      END AS solar_radiation_wm2
+    FROM weather_observations o
+    WHERE o.trail_id = ${trailId}
+      AND o.station_id = ${stationId}
+      AND o.timestamp >= ${rainEnd.toISOString()}
+      AND EXTRACT(HOUR FROM o.timestamp AT TIME ZONE 'America/Chicago') >= 8
+      AND EXTRACT(HOUR FROM o.timestamp AT TIME ZONE 'America/Chicago') < 18
+    ORDER BY o.timestamp ASC
   `;
 
   let driedSoFar = 0;
