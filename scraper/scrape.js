@@ -652,8 +652,10 @@ async function scrape() {
   log('Starting Facebook group scrape');
 
   // Check if we should actually scrape Facebook
+  const forceRun = process.argv.includes('--force');
   try {
-    const shouldRunRes = await fetch(`${API_URL}/api/scrape/should-run`, {
+    const shouldRunUrl = `${API_URL}/api/scrape/should-run${forceRun ? '?force=true' : ''}`;
+    const shouldRunRes = await fetch(shouldRunUrl, {
       headers: { 'Authorization': `Bearer ${API_SECRET}` },
     });
     if (shouldRunRes.ok) {

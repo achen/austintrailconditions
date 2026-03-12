@@ -16,6 +16,17 @@ export async function GET(request: Request) {
   }
 
   try {
+    // Allow force bypass for reclassification
+    const url = new URL(request.url);
+    if (url.searchParams.get('force') === 'true') {
+      return NextResponse.json({
+        shouldScrape: true,
+        reason: 'Forced via ?force=true',
+        wetTrailCount: 0,
+        hoursSinceLastScrape: 0,
+      });
+    }
+
     // Check if any trails are not fully dry
     const wetTrails = await sql`
       SELECT COUNT(*) as count FROM trails
