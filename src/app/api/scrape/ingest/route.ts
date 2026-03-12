@@ -3,6 +3,7 @@ import { storePosts } from '@/services/post-collector';
 import { classify } from '@/services/post-classifier';
 import { listActive } from '@/services/trail-service';
 import { applyVerifiedStatuses, expireStaleVerifications } from '@/services/trail-verifier';
+import { sql } from '@/lib/db';
 import { TrailReport } from '@/types';
 
 interface IngestPost {
@@ -63,8 +64,47 @@ export async function POST(request: Request) {
       const activeTrails = await listActive();
       const knownTrailNames = activeTrails.map((t) => t.name);
 
-      for (const post of posts) {
-        if (!newPostIds.has(post.postId)) continue; // Skip already-stored posts
+      // Classify new posts + any existing posts that need (re)classification
+      const postIdsToClassify = new Set(
+        posts.filter(p => newPostIds.has(p.postId)).map(p => p.postId)
+      );
+
+      // Also pick up existing unclassified posts from the last 48h
+      const unclassifiedResult = await sql`
+        SELECT post_id FROM trail_reports
+        WHERE classification IS NULL
+          AND timestamp > now() - interval '48 hours'
+      `;
+      for (const row of unclassifiedResult.rows) {
+        postIdsToClassify.add(row.post_id as string);
+      }
+
+      // Build a lookup of posts we received in this batch
+      const postsByIdFromBatch = new Map(posts.map(p => [p.postId, p]));
+
+      for (const postId of Array.from(postIdsToClassify)) {
+        // Use the batch version if available, otherwise load from DB
+        let post = postsByIdFromBatch.get(postId);
+        if (!post) {
+          const dbRow = await sql`
+            SELECT post_id, parent_post_id, author_name, post_text, timestamp,
+                   trail_references, classification, confidence_score, flagged_for_review
+            FROM trail_reports WHERE post_id = ${postId}
+          `;
+          if (dbRow.rows.length === 0) continue;
+          const r = dbRow.rows[0];
+          post = {
+            postId: r.post_id as string,
+            parentPostId: (r.parent_post_id as string) || null,
+            authorName: r.author_name as string,
+            postText: r.post_text as string,
+            timestamp: new Date(r.timestamp as string),
+            trailReferences: [],
+            classification: null,
+            confidenceScore: null,
+            flaggedForReview: false,
+          };
+        }
         if (!post.postText || post.postText.length < 3) continue;
         try {
           const result = await classify(post, knownTrailNames);
@@ -78,7 +118,7 @@ export async function POST(request: Request) {
             trails: result.trailReferences,
           });
         } catch (err) {
-          console.error(`Classification failed for ${post.postId}:`, err);
+          console.error(`Classification failed for ${postId}:`, err);
         }
       }
     }
