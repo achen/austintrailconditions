@@ -113,7 +113,7 @@ async function computeActualDrying(
            ELSE COALESCE((
              SELECT MAX(o2.solar_radiation_wm2)
              FROM weather_observations o2
-             WHERE o2.timestamp = o.timestamp
+             WHERE date_trunc('hour', o2.timestamp) = date_trunc('hour', o.timestamp)
                AND o2.solar_radiation_wm2 > 0
            ), 0)
       END AS solar_radiation_wm2
