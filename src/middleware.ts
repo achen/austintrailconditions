@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import crypto from 'crypto';
 
 const SESSION_COOKIE = 'admin_session';
 
@@ -17,14 +16,23 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'));
 }
 
-function isValidSession(cookieValue: string): boolean {
-  const [token, storedHash] = cookieValue.split(':');
+async function sha256Hex(input: string): Promise<string> {
+  const encoded = new TextEncoder().encode(input);
+  const hash = await crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function isValidSession(cookieValue: string): Promise<boolean> {
+  const idx = cookieValue.indexOf(':');
+  if (idx === -1) return false;
+  const token = cookieValue.slice(0, idx);
+  const storedHash = cookieValue.slice(idx + 1);
   if (!token || !storedHash) return false;
-  const computed = crypto.createHash('sha256').update(token).digest('hex');
+  const computed = await sha256Hex(token);
   return computed === storedHash;
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (!isProtected(pathname) || isPublic(pathname)) {
@@ -32,7 +40,7 @@ export function middleware(request: NextRequest) {
   }
 
   const session = request.cookies.get(SESSION_COOKIE);
-  if (!session?.value || !isValidSession(session.value)) {
+  if (!session?.value || !(await isValidSession(session.value))) {
     // API routes get 401, pages get redirected to login
     if (pathname.startsWith('/api/')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
