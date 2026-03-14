@@ -22,8 +22,10 @@ function mapRowToPrediction(row: Record<string, unknown>): Prediction {
 
 // ── Weather-responsive drying model ──────────────────────────────────
 //
-// Base evaporation rate: 0.6 mm/hr ≈ 0.024 in/hr under ideal conditions
-// (sunny, warm, breezy). Multipliers adjust for actual conditions.
+// Base evaporation rate: calibrated against observed drying times on
+// Central Texas rocky/limestone trails. Real-world trails dry ~0.3–0.5″
+// per sunny day. With 10 daytime hours and typical multipliers (~0.8),
+// a base of 0.048 in/hr yields ~0.38″/day under good conditions.
 //
 // Solar multiplier (from solar radiation W/m²):
 //   >= 600  → 1.0  (full sun)
@@ -32,7 +34,7 @@ function mapRowToPrediction(row: Record<string, unknown>): Prediction {
 //   0       → 0.0  (night / no sun at all)
 //
 // Wind multiplier:
-//   < 3 mph  → 0.5  (calm)
+//   < 3 mph  → 0.8  (calm — still evaporates)
 //   3-10 mph → 1.0  (light breeze)
 //   > 10 mph → 1.3  (windy)
 //
@@ -43,7 +45,7 @@ function mapRowToPrediction(row: Record<string, unknown>): Prediction {
 //   80-90°F → 1.2
 //   > 90°F  → 1.3
 
-const BASE_EVAP_IN_PER_HR = 0.024; // 0.6 mm/hr in inches
+const BASE_EVAP_IN_PER_HR = 0.048;
 
 function solarMultiplier(solarWm2: number): number {
   if (solarWm2 <= 0) return 0;
@@ -53,7 +55,7 @@ function solarMultiplier(solarWm2: number): number {
 }
 
 function windMultiplier(windMph: number): number {
-  if (windMph < 3) return 0.5;
+  if (windMph < 3) return 0.8;
   if (windMph <= 10) return 1.0;
   return 1.3;
 }
