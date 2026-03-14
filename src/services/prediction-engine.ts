@@ -100,23 +100,21 @@ async function computeActualDrying(
   avgWind: number;
   avgTemp: number;
 }> {
-  // Get hourly observations during daytime (8am-6pm CT) since rain ended
-  // If the trail's station lacks a solar sensor (reports 0), substitute
-  // the max solar reading from any other station at the same hour —
-  // solar radiation is effectively the same across the metro area.
+  // Get hourly observations during daytime (8am-6pm CT) since rain ended.
+  // Solar radiation is effectively the same across the metro area, so always
+  // use the max reading from any station at the same hour. This compensates
+  // for cheap/missing solar sensors on individual stations.
   const obs = await sql`
     SELECT
       o.timestamp,
       o.wind_speed_mph,
       o.temperature_f,
-      CASE WHEN o.solar_radiation_wm2 > 0 THEN o.solar_radiation_wm2
-           ELSE COALESCE((
-             SELECT MAX(o2.solar_radiation_wm2)
-             FROM weather_observations o2
-             WHERE date_trunc('hour', o2.timestamp) = date_trunc('hour', o.timestamp)
-               AND o2.solar_radiation_wm2 > 0
-           ), 0)
-      END AS solar_radiation_wm2
+      GREATEST(o.solar_radiation_wm2, COALESCE((
+        SELECT MAX(o2.solar_radiation_wm2)
+        FROM weather_observations o2
+        WHERE date_trunc('hour', o2.timestamp) = date_trunc('hour', o.timestamp)
+          AND o2.solar_radiation_wm2 > 0
+      ), 0)) AS solar_radiation_wm2
     FROM weather_observations o
     WHERE o.trail_id = ${trailId}
       AND o.station_id = ${stationId}
