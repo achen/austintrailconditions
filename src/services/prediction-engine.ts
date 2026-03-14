@@ -45,7 +45,7 @@ function mapRowToPrediction(row: Record<string, unknown>): Prediction {
 //   80-90°F → 1.2
 //   > 90°F  → 1.3
 
-const BASE_EVAP_IN_PER_HR = 0.048;
+const BASE_EVAP_IN_PER_HR = 0.065;
 
 function solarMultiplier(solarWm2: number): number {
   if (solarWm2 <= 0) return 0;
