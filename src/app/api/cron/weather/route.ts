@@ -50,6 +50,28 @@ export async function GET(request: Request) {
     const hasWetTrails = !!wetTrailsResult.rows[0]?.wet;
 
     if (hasActiveRain || hasWetTrails) {
+      // Refresh forecast dayparts once per day even while polling —
+      // the prediction engine needs current forecast data to estimate
+      // remaining drying time.
+      const todayStr = now.toISOString().slice(0, 10);
+      const hasTodayForecast = await sql`
+        SELECT 1 FROM weather_forecasts
+        WHERE forecast_date = ${todayStr} AND dayparts IS NOT NULL
+        LIMIT 1
+      `;
+      if (hasTodayForecast.rows.length === 0) {
+        try {
+          const forecast = await isRainForecast(config.weatherUnderground.apiKey);
+          await sql`
+            INSERT INTO weather_forecasts (forecast_date, rain_expected, max_chance, details, poll_after_utc, poll_until_utc, dayparts)
+            VALUES (${todayStr}, ${forecast.rainExpected}, ${forecast.maxChance}, ${forecast.details}, ${forecast.pollAfterUtc?.toISOString() ?? null}, ${forecast.pollUntilUtc?.toISOString() ?? null}, ${JSON.stringify(forecast.dayparts)})
+            ON CONFLICT (forecast_date) DO UPDATE SET dayparts = ${JSON.stringify(forecast.dayparts)}
+          `;
+        } catch (err) {
+          console.error('Forecast refresh failed:', err instanceof Error ? err.message : err);
+        }
+      }
+
       return await pollStations(config, now, hasActiveRain ? 'active-rain' : 'trails-drying');
     }
 
