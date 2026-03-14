@@ -454,8 +454,8 @@ export async function updatePredictions(): Promise<Prediction[]> {
 
     let predictedDryTime: Date;
 
-    if (remainingMoisture <= 0) {
-      // Already dry
+    if (remainingMoisture <= 0.1) {
+      // Effectively dry — 0.1" or less is negligible
       predictedDryTime = new Date();
     } else {
       // Estimate when it will finish drying based on recent conditions
@@ -516,8 +516,8 @@ export async function updatePredictions(): Promise<Prediction[]> {
 
     updatedPredictions.push(prediction);
 
-    // Transition to "Predicted Dry" if remaining moisture is gone
-    if (remainingMoisture <= 0 && trail.updatesEnabled) {
+    // Transition to "Predicted Dry" if remaining moisture is negligible
+    if (remainingMoisture <= 0.1 && trail.updatesEnabled) {
       await sql`
         UPDATE trails
         SET condition_status = 'Predicted Dry',
